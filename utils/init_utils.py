@@ -41,7 +41,9 @@ def injection_initialization(batch: MeasurementBatch, cfg: Config):
         )
         
     std = torch.full((num_final,), init_std_val, dtype=torch.float32, device=cfg.device)
-    concentration = torch.full((num_final,), 0.1, dtype=torch.float32, device=cfg.device)
+    # Same value the injection uses, so initialization is the injection applied
+    # to an empty model rather than a separate procedure
+    concentration = torch.full((num_final,), 0.01, dtype=torch.float32, device=cfg.device)
     
     return InitializationData(pos=final_pos, concentration=concentration, std=std)
 

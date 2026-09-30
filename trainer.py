@@ -53,6 +53,10 @@ class Trainer:
         self.results = TrainingResults()
         self.global_iteration = 0
 
+        # Prediction left by the last optimization step, reused by the injection
+        # so it does not have to run a second forward pass over the whole buffer.
+        self.last_prediction: torch.Tensor | None = None
+
         # --- Process obstacles into the fields used by the obstacle penalization ---
         self.sdf_tensor = None
         self.sdf_grad_tensor = None
@@ -185,6 +189,7 @@ class Trainer:
         self.optimizer.zero_grad()
         
         y_pred = self.model(self.buffer_beams)
+        self.last_prediction = y_pred.detach()
 
         # Weigthed measurements loss
         data_loss = torch.mean(self.buffer_weights * torch.abs(y_pred - self.buffer_measurements))
@@ -292,22 +297,30 @@ class Trainer:
         return total_loss
 
     def inject_gaussians(self) -> int:
-        """Injects new Gaussians based on high-error beams using Continuous Spatial NMS."""
-        y_pred = self.model(self.buffer_beams)
+        """Injects new Gaussians into the regions the current model does not cover."""
+        # Reuse the prediction of the last optimization step. It only lags behind by
+        # one optimizer step and the densification that precedes this call, and both
+        # the long-axis split and the pruning of negligible Gaussians leave the
+        # predicted integrals essentially unchanged.
+        if self.last_prediction is None or self.last_prediction.shape != self.buffer_measurements.shape:
+            self.last_prediction = self.model(self.buffer_beams).detach()
+
+        y_pred = self.last_prediction
         residuals = self.buffer_measurements - y_pred
-        
+
         # Dynamic scale
         map_w, map_h = self.model.map_size[0].item(), self.model.map_size[1].item()
         init_scale = min(map_w, map_h) * 0.1
-        
+
         final_pos = extract_candidate_positions(
             beams=self.buffer_beams,
             importance_scores=residuals,
             min_dist=init_scale,
             device=self.cfg.device,
-            existing_pos=self.model.get_pos().detach()
+            predictions=y_pred,
+            existing_pos=self.model.get_pos().detach(),
         )
-        
+
         num_injected = final_pos.shape[0]
         
         if num_injected > 0:
