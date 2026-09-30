@@ -1,4 +1,5 @@
 import numpy as np
+import scipy.ndimage as ndimage
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
@@ -130,37 +131,36 @@ def _steps_to_nearest_marked_cell(
     )
 
 
-def compute_wall_distance_field(
+def compute_esdf(obstacles: np.ndarray, cell_size: float) -> np.ndarray:
+    """Euclidean signed distance field (ESDF) D in meters, negative inside obstacles.
+
+    The transform measures between cell centers, so half a cell is taken off to
+    refer the distance to the obstacle surface.
+    """
+    occupied = obstacles > 0.5
+    dist_outside = np.asarray(ndimage.distance_transform_edt(~occupied))
+    dist_inside = np.asarray(ndimage.distance_transform_edt(occupied))
+
+    cells = dist_outside - dist_inside
+    return (np.where(cells > 0, cells - 0.5, cells + 0.5) * cell_size).astype(np.float32)
+
+
+def compute_esdf_gradient(esdf: np.ndarray) -> np.ndarray:
+    """Gradient of the ESDF by finite differences, (2, H, W) as (x, y)."""
+    grad_y, grad_x = np.gradient(esdf)
+    return np.stack([grad_x, grad_y], axis=0).astype(np.float32)
+
+
+def compute_aasdf(
     obstacles: np.ndarray,
     cell_size: float,
     max_dist: float,
 ) -> np.ndarray:
-    """Distance from every cell to the nearest obstacle along each axis (x and y).
+    """Axis-aligned signed distance field (AA-SDF) D_x, D_y in meters.
 
-    A signed distance field only exposes the closest surface, so a Gaussian in a
-    corner can respect it while leaking through the perpendicular wall. Keeping
-    one distance per axis constrains every surrounding wall independently.
-
-    Each axis covers both of its directions: the penalty only ever uses the
-    closer wall of the two, so they are merged here rather than at sample time,
-    which halves both the stored field and the per-iteration sampling. There is
-    no diagonal axis, because obstacles that are only visible diagonally are
-    what the signed distance field alongside this one is for.
-
-    The result is signed: inside an obstacle it holds minus the distance to the
-    nearest free space. That ramp is what pushes a Gaussian that ended up inside
-    an obstacle back out of it, so it must not be flattened.
-
-    Args:
-        obstacles: Binary occupancy grid (H, W).
-        cell_size: Cell size in meters.
-        max_dist: Distances are clipped here. Axes with no wall in sight
-            saturate at this value, which keeps the field smooth enough for
-            bilinear sampling.
-
-    Returns:
-        Array (2, H, W) holding the signed distance in meters along the
-        horizontal and vertical axes, negative inside obstacles.
+    Distance to the nearest obstacle along each axis, taking the closer of the
+    two senses, negative inside obstacles. Axes with no wall in sight saturate
+    at `max_dist`. Returns an array (2, H, W) ordered (x, y).
     """
     occupied = obstacles > 0.5
     free = ~occupied
