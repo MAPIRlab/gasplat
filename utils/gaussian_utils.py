@@ -1,3 +1,4 @@
+import math
 import torch
 
 def inverse_softplus(x):
@@ -98,7 +99,7 @@ def compute_definite_integral(pos, cov_inv, concentration, beams):
     
     # Integral from t=0 to t=1
     # sqrt(pi / 4A) = sqrt(pi) / (2 * sqrt_A)
-    integral_t = (torch.sqrt(torch.tensor(torch.pi)) / (2 * sqrt_A)) * term_exp * erf_term # (N, K)
+    integral_t = (math.sqrt(math.pi) / (2 * sqrt_A)) * term_exp * erf_term # (N, K)
 
     # Multiply by beam length
     integral_matrix = integral_t * ray_lengths.unsqueeze(1) # (N, K) * (N, 1) -> (N, K)

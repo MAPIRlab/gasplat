@@ -9,8 +9,8 @@ from trainer import Trainer
 
 def get_tomo_inputs(batch: MeasurementBatch, cfg: Config):
     """Helper to prevent repeating grid math and tensor conversions."""
-    grid_w = int(cfg.env.map_size[0] / cfg.env.cell_size)
-    grid_h = int(cfg.env.map_size[1] / cfg.env.cell_size)
+    grid_w = round(cfg.env.map_size[0] / cfg.env.cell_size)
+    grid_h = round(cfg.env.map_size[1] / cfg.env.cell_size)
     measurements = batch.measurements.cpu().numpy()
     return (grid_h, grid_w), measurements
 

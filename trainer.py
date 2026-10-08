@@ -345,7 +345,7 @@ class Trainer:
             # --- Model evaluation ---
             if self.cfg.train.do_eval and iteration % self.cfg.train.eval_interval == 0:
                 current_map = self.model.render_map(cell_size=self.cfg.env.cell_size)
-                rmse = np.sqrt(np.mean((current_map - self.ground_truth)**2))
+                rmse = float(np.sqrt(np.mean((current_map - self.ground_truth)**2)))
                 self.results.rmse_history[self.global_iteration] = rmse
             # ----------------------------
 

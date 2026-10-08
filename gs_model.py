@@ -26,10 +26,11 @@ class GasSplattingModel(nn.Module):
         self.clones = 0
 
         # --- Model parameters ---
-        self._pos = nn.Parameter(torch.rand(initial_gaussians, 2) * self.map_size)
-        self._concentration = nn.Parameter(torch.rand(initial_gaussians))
-        self._scale = nn.Parameter(torch.zeros(initial_gaussians, 2))
-        self._rotation = nn.Parameter(torch.rand(initial_gaussians) * 2*torch.pi)
+        dev = cfg.device
+        self._pos = nn.Parameter(torch.rand(initial_gaussians, 2, device=dev) * self.map_size)
+        self._concentration = nn.Parameter(torch.rand(initial_gaussians, device=dev))
+        self._scale = nn.Parameter(torch.zeros(initial_gaussians, 2, device=dev))
+        self._rotation = nn.Parameter(torch.rand(initial_gaussians, device=dev) * 2*torch.pi)
 
     def initialize_gaussians(self, pos: torch.Tensor, concentration: torch.Tensor, std: torch.Tensor):
         """
@@ -195,8 +196,8 @@ class GasSplattingModel(nn.Module):
         # Dynamically infer the device from model parameters
         device = self._pos.device
 
-        w_cells = int(map_w / cell_size)
-        h_cells = int(map_h / cell_size)
+        w_cells = round(map_w / cell_size)
+        h_cells = round(map_h / cell_size)
 
         # Grid setup. Cells are sampled at their center, the same convention
         # the ground truth and the obstacle mask use, so that the rendered map
@@ -397,7 +398,7 @@ class GasSplattingModel(nn.Module):
         
         c = torch.full_like(s_max, fill_value=0.5) 
         
-        idx = torch.arange(scales.size(0))
+        idx = torch.arange(scales.size(0), device=scales.device)
         
         # Shift new positions using the calculated c along the longest axis
         shift_local = torch.zeros_like(scales)

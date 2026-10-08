@@ -1,4 +1,3 @@
-import os
 import math
 import torch
 import numpy as np
@@ -16,6 +15,7 @@ class MeasurementBatch:
     """Sensor readings and their geometries."""
     beams: torch.Tensor         # Shape: (N, 2, 2)
     measurements: torch.Tensor  # Shape: (N,)
+    pose_ids: torch.Tensor | None = None  # Shape: (N,) - vantage pose of each beam, if any
 
 @dataclass
 class GroundTruth:
@@ -279,6 +279,197 @@ def generate_obstacle_aware_beams(
     return beams[:num_beams]
 
 
+# ==========================================
+#          VANTAGE-POINT BEAMS
+# ==========================================
+
+def raycast_grid(obstacles: np.ndarray, cell_size: float, origin: tuple[float, float],
+                 angle: float, max_range: float) -> float:
+    """Distance from `origin` along `angle` to the first blocked cell (DDA).
+
+    obstacles: (H, W) bool, row = y, col = x. Leaving the map counts as a hit.
+    Returns the distance to the boundary of the first blocked cell, i.e. the
+    beam ends on the wall surface, capped at max_range.
+    """
+    H, W = obstacles.shape
+    x0, y0 = origin
+    dx, dy = math.cos(angle), math.sin(angle)
+    col, row = int(x0 // cell_size), int(y0 // cell_size)
+
+    step_c = 1 if dx > 0 else -1
+    step_r = 1 if dy > 0 else -1
+    inv_dx = abs(1.0 / dx) if abs(dx) > 1e-12 else math.inf
+    inv_dy = abs(1.0 / dy) if abs(dy) > 1e-12 else math.inf
+    next_x = (col + (step_c > 0)) * cell_size
+    next_y = (row + (step_r > 0)) * cell_size
+    t_max_x = abs(next_x - x0) * inv_dx
+    t_max_y = abs(next_y - y0) * inv_dy
+    t_delta_x, t_delta_y = cell_size * inv_dx, cell_size * inv_dy
+
+    t = 0.0
+    while t < max_range:
+        if t_max_x < t_max_y:
+            t, col = t_max_x, col + step_c
+            t_max_x += t_delta_x
+        else:
+            t, row = t_max_y, row + step_r
+            t_max_y += t_delta_y
+        if not (0 <= row < H and 0 <= col < W) or obstacles[row, col]:
+            return min(t, max_range)
+    return max_range
+
+
+def visible_cells(origins: np.ndarray, obstacles: np.ndarray, cell_size: float,
+                  max_range: float, num_rays: int = 720) -> np.ndarray:
+    """Cells crossed by a full 360-degree sweep of beams from each origin.
+
+    Every origin casts `num_rays` evenly spaced rays, marched in quarter-cell
+    steps until they hit an obstacle, leave the map or reach max_range. Returns
+    an (O, H*W) boolean matrix: entry (o, i) is True when some ray from origin o
+    crosses cell i (flat index row * W + col).
+    """
+    H, W = obstacles.shape
+    angles = np.arange(num_rays) * (2 * np.pi / num_rays)
+    dirs = np.stack([np.cos(angles), np.sin(angles)], axis=1)              # (R, 2)
+    O = len(origins)
+    pos = np.repeat(origins, num_rays, axis=0)                             # (O*R, 2)
+    step = np.tile(dirs, (O, 1)) * (cell_size / 4)
+    owner = np.repeat(np.arange(O), num_rays)
+    visible = np.zeros((O, H * W), dtype=bool)
+
+    alive = np.arange(O * num_rays)
+    for _ in range(int(math.ceil(max_range / (cell_size / 4)))):
+        p = pos[alive]
+        col = np.floor(p[:, 0] / cell_size).astype(np.int64)
+        row = np.floor(p[:, 1] / cell_size).astype(np.int64)
+        inside = (row >= 0) & (row < H) & (col >= 0) & (col < W)
+        open_ = inside.copy()
+        open_[inside] = ~obstacles[row[inside], col[inside]]
+        alive, row, col = alive[open_], row[open_], col[open_]
+        if len(alive) == 0:
+            break
+        visible[owner[alive], row * W + col] = True
+        pos[alive] += step[alive]
+    return visible
+
+
+def select_vantage_poses(obstacles: np.ndarray, cell_size: float,
+                         num_poses: int | None = None, min_clearance: float = 0.3,
+                         max_range: float = 30.0, min_angle: float = 30.0,
+                         coverage: float = 0.95, spacing: float = 0.3) -> np.ndarray:
+    """Place robot poses so that the free space is seen from two directions.
+
+    A beam integral only localizes gas along its own line, so a region is
+    resolved where beams from at least two poses cross it. A free cell counts
+    as covered once it is crossed by beams from two poses whose lines differ by
+    at least `min_angle` degrees (lines, not rays: opposite poses see a cell
+    along the same line and do not count).
+
+    Poses are chosen greedily among candidate positions, free cells on a grid
+    of `spacing` m with at least `min_clearance` m to any obstacle, in the
+    largest connected free region, so the poses depend on the map alone.
+    Each step adds the candidate that increases
+    sum_i level_i the most, where level_i is 0 for an unseen cell, 1 for a cell
+    seen from a single direction and 2 for a covered one. Selection stops after
+    `num_poses` poses or, if num_poses is None, once a fraction `coverage` of the
+    free cells is covered (or no candidate improves it further).
+
+    Returns (P, 2) positions in meters.
+    """
+    from scipy.ndimage import distance_transform_edt, label
+
+    H, W = obstacles.shape
+    free = ~obstacles.astype(bool)
+    labels, n = label(free)
+    if n == 0:
+        raise ValueError("The map has no free space.")
+    reachable = labels == 1 + np.argmax(np.bincount(labels.ravel())[1:])
+    # pad with obstacles so the map border also counts for clearance
+    # (center-to-center EDT minus half a cell = distance to the obstacle surface)
+    clearance = (distance_transform_edt(np.pad(free, 1))[1:-1, 1:-1] - 0.5) * cell_size
+
+    stride = max(1, round(spacing / cell_size))
+    grid = np.zeros_like(free)
+    grid[stride // 2::stride, stride // 2::stride] = True
+    rows, cols = np.nonzero(grid & reachable & (clearance >= min_clearance))
+    if len(rows) == 0:
+        raise ValueError(f"No candidate pose with {min_clearance} m clearance.")
+    cand = np.stack([(cols + 0.5) * cell_size, (rows + 0.5) * cell_size], axis=1)
+
+    target = reachable.ravel()
+    vis = visible_cells(cand, obstacles, cell_size, max_range) & target   # (C, H*W)
+    cy, cx = np.divmod(np.arange(H * W), W)
+    cell_xy = np.stack([(cx + 0.5) * cell_size, (cy + 0.5) * cell_size], axis=1)
+    # direction of the line from each candidate to each cell, in [0, pi)
+    bearing = np.mod(np.arctan2(cell_xy[None, :, 1] - cand[:, None, 1],
+                                cell_xy[None, :, 0] - cand[:, None, 0]), np.pi)
+
+    min_angle = math.radians(min_angle)
+    level = np.zeros(H * W, dtype=np.int8)
+    # crosses[c, i]: candidate c would see cell i at min_angle or more from a chosen pose
+    crosses = np.zeros_like(vis)
+    chosen = []
+    num_target = int(target.sum())
+    while num_poses is None or len(chosen) < num_poses:
+        gain = (vis & (level == 0)).sum(axis=1) + (vis & crosses & (level == 1)).sum(axis=1)
+        best = int(np.argmax(gain))
+        if gain[best] == 0:
+            if num_poses is not None:
+                raise ValueError(f"Only {len(chosen)} poses improve the coverage, "
+                                 f"{num_poses} requested.")
+            break
+        chosen.append(best)
+        seen = vis[best]
+        level[seen & (level == 0)] = 1
+        level[seen & crosses[best]] = 2
+        diff = np.abs(bearing - bearing[best])
+        crosses |= seen & (np.minimum(diff, np.pi - diff) >= min_angle)
+        if num_poses is None and (level == 2).sum() >= coverage * num_target:
+            break
+    return cand[chosen]
+
+
+def generate_vantage_beams(obstacles: np.ndarray, cell_size: float, num_beams: int,
+                           num_poses: int | None = None, poses: np.ndarray | None = None,
+                           min_clearance: float = 0.3, max_range: float = 30.0,
+                           min_angle: float = 30.0, coverage: float = 0.95,
+                           min_length: float = 0.2, fov: float = 2 * np.pi,
+                           seed: int | None = None):
+    """Beams shot by a robot that stops at several poses and pans its TDLAS.
+
+    Poses come from select_vantage_poses unless given. At each pose the sensor sweeps `fov` radians (centered on a random heading)
+    with evenly spaced beams; each beam ends at the first obstacle (the
+    reflector) or at max_range. Beams shorter than min_length are dropped.
+
+    Returns (beams, pose_ids, poses): beams as [((x0, y0), (x1, y1)), ...] in
+    meters, pose_ids (N,) int array, poses (P, 2) array.
+    """
+    rng = np.random.default_rng(seed)
+    if poses is None:
+        poses = select_vantage_poses(obstacles, cell_size, num_poses, min_clearance,
+                                     max_range, min_angle, coverage)
+    num_poses = len(poses)
+    per_pose = [num_beams // num_poses + (p < num_beams % num_poses) for p in range(num_poses)]
+
+    beams, pose_ids = [], []
+    for p, ((x0, y0), n) in enumerate(zip(poses, per_pose)):
+        if n == 0:
+            continue
+        heading = rng.uniform(0, 2 * np.pi)
+        if fov >= 2 * np.pi - 1e-9:
+            angles = heading + np.arange(n) * (2 * np.pi / n)
+        else:
+            angles = heading + np.linspace(-fov / 2, fov / 2, n)
+        for a in angles:
+            d = raycast_grid(obstacles, cell_size, (x0, y0), a, max_range)
+            if d < min_length:
+                continue
+            beams.append(((float(x0), float(y0)),
+                          (float(x0 + d * math.cos(a)), float(y0 + d * math.sin(a)))))
+            pose_ids.append(p)
+    return beams, np.asarray(pose_ids, dtype=np.int64), np.asarray(poses)
+
+
 def simulate_gas_integrals(
     gas_concentration_map: np.ndarray,
     beams: list,
@@ -314,10 +505,12 @@ def simulate_gas_integrals(
 #         GENERATE GROUND TRUTH
 # ==========================================
 
-def add_measurement_noise(y_true, snr_db=30):
+def add_measurement_noise(y_true, snr_db=30, abs_std=0.0):
+    """Additive Gaussian noise: relative part set by snr_db, plus an optional
+    absolute floor abs_std (same units as y, e.g. ppm*m)."""
     y_true_np = y_true.cpu().numpy()
     signal_power = np.mean(y_true_np**2)
-    noise_power = signal_power / (10**(snr_db / 10))
+    noise_power = signal_power / (10**(snr_db / 10)) + abs_std**2
     noise = np.random.normal(0, np.sqrt(noise_power), size=y_true_np.shape)
     y_noisy = y_true_np + noise
     y_noisy[y_noisy < 0] = 0
@@ -326,29 +519,21 @@ def add_measurement_noise(y_true, snr_db=30):
 def generate_simulation_data(cfg: Config) -> tuple[MeasurementBatch, EnvironmentContext]:
     """Generates gas distribution (ground truth), beams and measurements"""
     
-    if cfg.sim.seed:
+    if cfg.sim.seed is not None:
         np.random.seed(cfg.sim.seed)
 
     quiet = cfg.quiet
 
-    # ----- Ground Truth -----
-    if cfg.sim.gt_file is not None:
-        if not os.path.exists(cfg.sim.gt_file):
-            raise FileNotFoundError(f"Ground truth file not found: {cfg.sim.gt_file}")
-        if not quiet: print(f"Loading ground truth from {cfg.sim.gt_file}...")
-        img_gt = np.loadtxt(cfg.sim.gt_file, delimiter=',')
-       
-        rows, cols = img_gt.shape
-        map_w = cols * cfg.env.cell_size
-        map_h = rows * cfg.env.cell_size
-        cfg.env.map_size = (map_w, map_h)
-    else:
-        if not quiet: print("Generating procedural ground truth...")
-        map_w, map_h = cfg.env.map_size
-        grid_w = int(map_w / cfg.env.cell_size)
-        grid_h = int(map_h / cfg.env.cell_size)
+    if cfg.sim.scenario:
+        return generate_scenario_data(cfg)
 
-        img_gt = generate_fractal_gas_distribution(grid_size=(grid_h, grid_w))
+    # ----- Ground Truth -----
+    if not quiet: print("Generating procedural ground truth...")
+    map_w, map_h = cfg.env.map_size
+    grid_w = round(map_w / cfg.env.cell_size)
+    grid_h = round(map_h / cfg.env.cell_size)
+
+    img_gt = generate_fractal_gas_distribution(grid_size=(grid_h, grid_w))
 
     # ------ Beams ------
     if not quiet: print("Generating beams...")
@@ -377,4 +562,56 @@ def generate_simulation_data(cfg: Config) -> tuple[MeasurementBatch, Environment
     return (
         MeasurementBatch(beams=beams_tensor, measurements=measurements),
         EnvironmentContext(ground_truth=GroundTruth(gas_map=img_gt, y_true=y_true))
+    )
+
+def generate_scenario_data(cfg: Config) -> tuple[MeasurementBatch, EnvironmentContext]:
+    """Measurements on a GADEN scenario package (see gaden_utils.py).
+
+    Uses cfg.sim.scenario (package directory) and the vantage-point fields of
+    cfg.sim (num_poses, min_clearance, max_range, min_crossing_angle, coverage,
+    beam_fov, noise_floor). The distribution is quasi-static, so every beam
+    integrates the same snapshot, which is also the ground truth.
+    """
+    from utils.gaden_utils import load_scenario
+
+    quiet = cfg.quiet
+    sc = load_scenario(cfg.sim.scenario)
+    if cfg.sim.normalize_scenario:
+        # The hyperparameters are tuned for maps peaking at 1 (as the procedural
+        # generator produces), so ppm maps are brought to that range
+        ppm_scale = float(sc.gas_map.max())
+        sc.gas_map = sc.gas_map / ppm_scale
+        if not quiet: print(f"Scenario normalized to unit peak (1 = {ppm_scale:.2f} ppm)")
+    cfg.env.cell_size = sc.meta["cell_size"]
+    cfg.env.map_size = tuple(sc.meta["map_size_m"])
+    obstacles = sc.obstacles
+
+    if not quiet: print(f"Loaded scenario {cfg.sim.scenario} "
+                        f"({obstacles.shape[1]}x{obstacles.shape[0]} cells). Generating beams...")
+    beams_list, pose_ids, _ = generate_vantage_beams(
+        obstacles, cfg.env.cell_size, cfg.sim.num_beams,
+        num_poses=cfg.sim.num_poses,
+        min_clearance=cfg.sim.min_clearance,
+        max_range=cfg.sim.max_range,
+        min_angle=cfg.sim.min_crossing_angle,
+        coverage=cfg.sim.coverage,
+        fov=cfg.sim.beam_fov,
+        seed=cfg.sim.seed,
+    )
+
+    dev = cfg.device
+    y_true = torch.tensor(simulate_gas_integrals(sc.gas_map, beams_list, cfg.env.cell_size, quiet=quiet),
+                          dtype=torch.float32, device=dev)
+    measurements = y_true
+    if cfg.sim.noise:
+        if not quiet: print(f"Adding noise to the measurements ({cfg.sim.snr_db} dB)...")
+        measurements = add_measurement_noise(measurements, snr_db=cfg.sim.snr_db,
+                                             abs_std=cfg.sim.noise_floor)
+
+    return (
+        MeasurementBatch(beams=torch.tensor(beams_list, dtype=torch.float32, device=dev),
+                         measurements=measurements,
+                         pose_ids=torch.tensor(pose_ids, device=dev)),
+        EnvironmentContext(obstacles=obstacles,
+                           ground_truth=GroundTruth(gas_map=sc.gas_map, y_true=y_true)),
     )

@@ -38,7 +38,7 @@ def plot_initial_guess(img_gt: np.ndarray | None, init_data: InitializationData,
     init_pos = init_data.pos.detach().cpu().numpy()
     
     # Create a blank dark background to frame the seeds nicely
-    grid_w, grid_h = int(map_w / cfg.env.cell_size), int(map_h / cfg.env.cell_size)
+    grid_w, grid_h = round(map_w / cfg.env.cell_size), round(map_h / cfg.env.cell_size)
     background = np.zeros((grid_h, grid_w))
 
     if img_gt is not None:
@@ -77,8 +77,8 @@ def plot_training_results(gaussians: GasSplattingModel, batch: MeasurementBatch,
     """Saves a plot with GT, GS reconstruction, loss history (with optional RMSE), and densification events"""
 
     map_w, map_h = cfg.env.map_size
-    grid_w = int(map_w / cfg.env.cell_size)
-    grid_h = int(map_h / cfg.env.cell_size)
+    grid_w = round(map_w / cfg.env.cell_size)
+    grid_h = round(map_h / cfg.env.cell_size)
     max_map_dim = max(map_w, map_h)
 
     # Generate images
@@ -90,9 +90,11 @@ def plot_training_results(gaussians: GasSplattingModel, batch: MeasurementBatch,
     ground_truth = environment.ground_truth.gas_map
     vmax = max(ground_truth.max(), img_pred.max())
 
-    # RMSE
-    mse = np.mean((img_pred - ground_truth)**2)
-    rmse = np.sqrt(mse)
+    # RMSE, over free cells only when the environment has obstacles
+    obstacles = environment.obstacles
+    free = np.ones_like(ground_truth, dtype=bool) if obstacles is None else ~(obstacles > 0.5)
+    rmse = np.sqrt(np.mean((img_pred - ground_truth)[free]**2))
+    walls = None if obstacles is None else np.ma.masked_where(~(obstacles > 0.5), np.ones_like(ground_truth))
 
     fig = plt.figure(figsize=(12, 8)) 
     
@@ -103,8 +105,8 @@ def plot_training_results(gaussians: GasSplattingModel, batch: MeasurementBatch,
     ax1 = fig.add_subplot(gs[0, 0])
     ax1.set_title(f"Ground Truth ({grid_w}x{grid_h})")
     im1 = ax1.imshow(ground_truth, origin='lower', extent=(0, map_w, 0, map_h), cmap='viridis', vmin=vmin, vmax=vmax)
-    for i in range(len(batch.beams)):
-        (x0, y0), (x1, y1) = batch.beams[i]
+    for beam in batch.beams.cpu().numpy():
+        (x0, y0), (x1, y1) = beam[0], beam[1]
         ax1.plot([x0, x1], [y0, y1], 'w-', alpha=0.3, linewidth=1.0)
 
     # 2. Reconstruction (Top Center)
@@ -118,6 +120,10 @@ def plot_training_results(gaussians: GasSplattingModel, batch: MeasurementBatch,
     ax3 = fig.add_subplot(gs[0, 2])
     ax3.set_title(f"GS Reconstruction (Grid)\nRMSE = {rmse:.4f}")
     ax3.imshow(img_pred, origin='lower', extent=(0, map_w, 0, map_h), cmap='viridis', vmin=vmin, vmax=vmax)
+
+    if walls is not None:
+        for ax in (ax1, ax2, ax3):
+            ax.imshow(walls, origin='lower', extent=(0, map_w, 0, map_h), cmap='Greys', vmin=0, vmax=2.5, interpolation='nearest')
 
     # Single Colorbar
     fig.colorbar(im1, ax=[ax1, ax2, ax3], label="ppm", fraction=0.015, pad=0.02)
