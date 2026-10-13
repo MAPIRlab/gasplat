@@ -1,5 +1,5 @@
 import numpy as np
-from shapely.geometry import LineString, Polygon
+from scipy import sparse
 
 def xy2cell(pos_m: tuple, cell_size_m: float) -> tuple[int, int]:
     """Translate (x, y) coordinates in meters to (row, column) indices."""
@@ -13,45 +13,74 @@ def cell2xy(cell_rc: tuple, cell_size_m: float) -> tuple[float, float]:
     y = cell_rc[0] * cell_size_m + cell_size_m / 2
     return x, y
 
-def iter_ray_cell_intersections(
-    beam: tuple,
+def ray_cell_lengths(
+    beams,
     grid_size: tuple[int, int],
     cell_size_m: float,
-):
-    """Yield grid cells crossed by a beam and their path lengths in meters."""
-    (x0, y0), (x1, y1) = beam
+    chunk: int = 4096,
+) -> tuple[sparse.csr_matrix, np.ndarray]:
+    """Length of every beam inside every grid cell, as a sparse (N, rows * cols) matrix.
+
+    Exact traversal: each beam is cut where it crosses the vertical and the
+    horizontal grid lines, and every piece is assigned to the cell holding its
+    midpoint (cell index row * cols + col, row = y). A piece running along a
+    grid line, which only happens for axis-aligned beams, is shared evenly by
+    the cells on both sides of it.
+
+    Beams with an endpoint outside the map get an empty row, and are flagged
+    False in the returned validity mask (N,).
+    """
+    beams = np.asarray(beams, dtype=np.float64).reshape(-1, 2, 2)
     rows, cols = grid_size
-    map_width = cols * cell_size_m
-    map_height = rows * cell_size_m
+    width, height = cols * cell_size_m, rows * cell_size_m
+    p0, delta = beams[:, 0], beams[:, 1] - beams[:, 0]
+    length = np.linalg.norm(delta, axis=1)
+    valid = ((beams[..., 0] >= 0) & (beams[..., 0] <= width)
+             & (beams[..., 1] >= 0) & (beams[..., 1] <= height)).all(axis=1)
 
-    if not (
-        0 <= x0 <= map_width
-        and 0 <= y0 <= map_height
-        and 0 <= x1 <= map_width
-        and 0 <= y1 <= map_height
-    ):
-        return
+    x_lines = np.arange(cols + 1) * cell_size_m
+    y_lines = np.arange(rows + 1) * cell_size_m
+    beam_idx, cell_idx, lengths = [], [], []
 
-    beam_line = LineString([(x0, y0), (x1, y1)])
+    for start in range(0, len(beams), chunk):
+        sel = np.arange(start, min(start + chunk, len(beams)))
+        sel = sel[valid[sel] & (length[sel] > 0)]
+        if len(sel) == 0:
+            continue
+        o, d = p0[sel], delta[sel]
 
-    min_col = max(0, int(np.floor(min(x0, x1) / cell_size_m)))
-    max_col = min(cols - 1, int(np.floor(max(x0, x1) / cell_size_m)))
-    min_row = max(0, int(np.floor(min(y0, y1) / cell_size_m)))
-    max_row = min(rows - 1, int(np.floor(max(y0, y1) / cell_size_m)))
+        # Path parameter t in (0, 1) of every crossing with a grid line
+        with np.errstate(divide="ignore", invalid="ignore"):
+            tx = (x_lines[None, :] - o[:, :1]) / d[:, :1]
+            ty = (y_lines[None, :] - o[:, 1:]) / d[:, 1:]
+        t = np.concatenate([np.zeros((len(sel), 1)), tx, ty, np.ones((len(sel), 1))], axis=1)
+        t[~((t >= 0) & (t <= 1))] = np.inf          # outside the segment, or parallel (nan)
+        t.sort(axis=1)
 
-    for row in range(min_row, max_row + 1):
-        for col in range(min_col, max_col + 1):
-            x_min = col * cell_size_m
-            y_min = row * cell_size_m
-            x_max = (col + 1) * cell_size_m
-            y_max = (row + 1) * cell_size_m
-            cell_polygon = Polygon([
-                (x_min, y_min),
-                (x_max, y_min),
-                (x_max, y_max),
-                (x_min, y_max),
-            ])
-            intersection = beam_line.intersection(cell_polygon)
+        t_a, t_b = t[:, :-1], t[:, 1:]
+        piece = np.isfinite(t_b) & (t_b > t_a)
+        b, k = np.nonzero(piece)
+        t_mid = (t_a[b, k] + t_b[b, k]) / 2
+        seg_len = (t_b[b, k] - t_a[b, k]) * length[sel][b]
 
-            if not intersection.is_empty and intersection.geom_type == 'LineString':
-                yield row, col, intersection.length
+        # Cells around the midpoint: the same one twice unless it lies on a grid line
+        mid = o[b] + t_mid[:, None] * d[b]
+        def neighbours(coord, n):
+            f = coord / cell_size_m
+            on_line = np.abs(f - np.round(f)) < 1e-9
+            lo = np.where(on_line, np.round(f) - 1, np.floor(f))
+            hi = np.where(on_line, np.round(f), np.floor(f))
+            return np.clip(lo, 0, n - 1).astype(np.int64), np.clip(hi, 0, n - 1).astype(np.int64)
+        c_lo, c_hi = neighbours(mid[:, 0], cols)
+        r_lo, r_hi = neighbours(mid[:, 1], rows)
+
+        for r in (r_lo, r_hi):
+            for c in (c_lo, c_hi):
+                beam_idx.append(sel[b])
+                cell_idx.append(r * cols + c)
+                lengths.append(seg_len / 4)
+
+    if beam_idx:
+        beam_idx, cell_idx, lengths = map(np.concatenate, (beam_idx, cell_idx, lengths))
+    matrix = sparse.coo_matrix((lengths, (beam_idx, cell_idx)), shape=(len(beams), rows * cols)).tocsr()
+    return matrix, valid

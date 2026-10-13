@@ -46,7 +46,9 @@ def main():
     # --- Save Results ---
     metadata = {
         "experiment_name": "training",
-        "num_beams": cfg.sim.num_beams,
+        "num_beams": len(batch.measurements),
+        "scenario": cfg.sim.scenario,
+        "angular_step": cfg.sim.angular_step if cfg.sim.scenario else None,
         "map_size": cfg.env.map_size,
         "cell_size": cfg.env.cell_size
     }

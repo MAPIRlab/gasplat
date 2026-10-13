@@ -115,8 +115,7 @@ def main():
     axes[0].axis('off')
     
     # Overlay beams
-    for i in range(0, len(batch.beams)):
-        (x0, y0), (x1, y1) = batch.beams[i]
+    for (x0, y0), (x1, y1) in batch.beams.cpu().numpy():
         axes[0].plot([x0, x1], [y0, y1], 'w-', alpha=0.1, linewidth=0.5)
     
     # Plot method reconstructions

@@ -1,24 +1,14 @@
 import numpy as np
 import scipy.sparse as sparse
-from scipy.sparse import dok_matrix
 from scipy.sparse.linalg import lsqr
 from tqdm import tqdm
-from utils.geometry_utils import iter_ray_cell_intersections
+from utils.geometry_utils import ray_cell_lengths
 
-def create_system_matrix_sparse(grid_size: tuple, beams: list, cell_dimensions_meters: float, quiet: bool = False) -> dok_matrix:
-    """Creates the sparse system matrix A for TDLAS tomography."""
-    rows, cols = grid_size
-    num_cells = rows * cols
-    num_beams = len(beams)
-    A = dok_matrix((num_beams, num_cells), dtype=float)
-
-    for i, beam in tqdm(enumerate(beams), desc="Building System Matrix", total=num_beams, dynamic_ncols=True, disable=quiet):
-        for row, col, path_length in iter_ray_cell_intersections(
-            beam, grid_size, cell_dimensions_meters
-        ):
-            cell_index = row * cols + col
-            A[i, cell_index] = path_length
-
+def create_system_matrix_sparse(grid_size: tuple, beams: list, cell_dimensions_meters: float, quiet: bool = False) -> sparse.csr_matrix:
+    """Creates the sparse system matrix A for TDLAS tomography: A[n, row * cols + col]
+    is the length of beam n inside that cell, the same model the simulated
+    measurements are computed with."""
+    A, _ = ray_cell_lengths(beams, grid_size, cell_dimensions_meters)
     return A
 
 #===============================

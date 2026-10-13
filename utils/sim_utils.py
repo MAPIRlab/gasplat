@@ -1,13 +1,12 @@
 import math
 import torch
 import numpy as np
-from tqdm import tqdm
 from dataclasses import dataclass
 from scipy.ndimage import gaussian_filter
 from shapely.geometry import LineString, Point
 
 from config import Config
-from utils.geometry_utils import iter_ray_cell_intersections
+from utils.geometry_utils import ray_cell_lengths
 
 
 @dataclass
@@ -434,17 +433,34 @@ def select_vantage_poses(obstacles: np.ndarray, cell_size: float,
     return cand[chosen]
 
 
-def generate_vantage_beams(obstacles: np.ndarray, cell_size: float, num_beams: int,
+def sweep_angles(heading: float, angular_step: float, fov: float = 360.0) -> np.ndarray:
+    """Beam directions (rad) of one pan sweep with a fixed angular resolution.
+
+    angular_step and fov are in degrees. A full turn takes round(360 / step)
+    beams spread evenly around it, so a step that does not divide 360 is
+    adjusted slightly to close the circle. A partial sweep keeps the step
+    exactly and is centered on `heading` (rad).
+    """
+    if fov >= 360.0 - 1e-9:
+        n = max(1, round(360.0 / angular_step))
+        return heading + np.arange(n) * (2 * np.pi / n)
+    n = int(fov / angular_step + 1e-9) + 1
+    return heading + np.radians((np.arange(n) - (n - 1) / 2) * angular_step)
+
+
+def generate_vantage_beams(obstacles: np.ndarray, cell_size: float, angular_step: float,
                            num_poses: int | None = None, poses: np.ndarray | None = None,
                            min_clearance: float = 0.3, max_range: float = 30.0,
                            min_angle: float = 30.0, coverage: float = 0.95,
-                           min_length: float = 0.2, fov: float = 2 * np.pi,
+                           min_length: float = 0.2, fov: float = 360.0,
                            rng: np.random.Generator | None = None):
     """Beams shot by a robot that stops at several poses and pans its TDLAS.
 
-    Poses come from select_vantage_poses unless given. At each pose the sensor sweeps `fov` radians (centered on a random heading)
-    with evenly spaced beams; each beam ends at the first obstacle (the
-    reflector) or at max_range. Beams shorter than min_length are dropped.
+    Poses come from select_vantage_poses unless given. At each pose the sensor
+    sweeps `fov` degrees with one beam every `angular_step` degrees, as a
+    pan unit does, starting from a random heading; each beam ends at the first
+    obstacle (the reflector) or at max_range. Beams shorter than min_length
+    are dropped, so a pose next to a wall may keep fewer beams.
 
     Returns (beams, pose_ids, poses): beams as [((x0, y0), (x1, y1)), ...] in
     meters, pose_ids (N,) int array, poses (P, 2) array.
@@ -453,22 +469,13 @@ def generate_vantage_beams(obstacles: np.ndarray, cell_size: float, num_beams: i
     if poses is None:
         poses = select_vantage_poses(obstacles, cell_size, num_poses, min_clearance,
                                      max_range, min_angle, coverage)
-    num_poses = len(poses)
-    per_pose = [num_beams // num_poses + (p < num_beams % num_poses) for p in range(num_poses)]
 
     # Beams leaving through an opening in the map border end on it; clamping
     # keeps rounding errors from placing that endpoint just outside the map
     map_w, map_h = obstacles.shape[1] * cell_size, obstacles.shape[0] * cell_size
     beams, pose_ids = [], []
-    for p, ((x0, y0), n) in enumerate(zip(poses, per_pose)):
-        if n == 0:
-            continue
-        heading = rng.uniform(0, 2 * np.pi)
-        if fov >= 2 * np.pi - 1e-9:
-            angles = heading + np.arange(n) * (2 * np.pi / n)
-        else:
-            angles = heading + np.linspace(-fov / 2, fov / 2, n)
-        for a in angles:
+    for p, (x0, y0) in enumerate(poses):
+        for a in sweep_angles(rng.uniform(0, 2 * np.pi), angular_step, fov):
             d = raycast_grid(obstacles, cell_size, (x0, y0), a, max_range)
             if d < min_length:
                 continue
@@ -484,31 +491,18 @@ def simulate_gas_integrals(
     beams: list,
     cell_dimensions_meters: float,
     quiet: bool = False
-) -> list[float]:
-    """Simulates a TDLAS raytracing measurement with path length calculation within cells."""
-    integral_concentrations = []
-    rows, cols = gas_concentration_map.shape
-    map_width = cols * cell_dimensions_meters
-    map_height = rows * cell_dimensions_meters
+) -> np.ndarray:
+    """Simulates TDLAS measurements: the integral of the map along each beam.
 
-    for beam in tqdm(beams, desc="Gas Integrals Simulation", dynamic_ncols=True, disable=quiet):
-        (x0, y0), (x1, y1) = beam
-        if not (0 <= x0 <= map_width and 0 <= y0 <= map_height and
-                0 <= x1 <= map_width and 0 <= y1 <= map_height):
+    Every cell contributes its concentration times the length of the beam
+    inside it (exact traversal, see ray_cell_lengths). Beams leaving the map
+    measure 0.
+    """
+    lengths, valid = ray_cell_lengths(beams, gas_concentration_map.shape, cell_dimensions_meters)
+    if not quiet:
+        for (x0, y0), (x1, y1) in np.asarray(beams, dtype=float).reshape(-1, 2, 2)[~valid]:
             print(f"Warning: Beam ({x0}, {y0}) - ({x1}, {y1}) is out of map boundaries. Skipping.")
-            integral_concentrations.append(0.0)
-            continue
-
-        weighted_concentration = 0.0
-
-        for row, col, path_length in iter_ray_cell_intersections(
-            beam, gas_concentration_map.shape, cell_dimensions_meters
-        ):
-            weighted_concentration += gas_concentration_map[row, col] * path_length
-                    
-        integral_concentrations.append(weighted_concentration)
-
-    return integral_concentrations
+    return lengths @ np.asarray(gas_concentration_map, dtype=np.float64).ravel()
 
 # ==========================================
 #         GENERATE GROUND TRUTH
@@ -586,8 +580,10 @@ def generate_scenario_data(cfg: Config, beam_rng: np.random.Generator,
     """Measurements on a GADEN scenario package (see gaden_utils.py).
 
     Uses cfg.sim.scenario (package directory) and the vantage-point fields of
-    cfg.sim (num_poses, min_clearance, max_range, min_crossing_angle, coverage,
-    beam_fov, noise_floor). The distribution is quasi-static, so every beam
+    cfg.sim (num_poses, angular_step, beam_fov, min_clearance, max_range,
+    min_crossing_angle, coverage, noise_floor). cfg.sim.num_beams is not used:
+    the number of beams follows from the poses the map needs and the angular
+    resolution of the sweep. The distribution is quasi-static, so every beam
     integrates the same snapshot, which is also the ground truth.
     """
     from utils.gaden_utils import load_scenario
@@ -606,8 +602,8 @@ def generate_scenario_data(cfg: Config, beam_rng: np.random.Generator,
 
     if not quiet: print(f"Loaded scenario {cfg.sim.scenario} "
                         f"({obstacles.shape[1]}x{obstacles.shape[0]} cells). Generating beams...")
-    beams_list, pose_ids, _ = generate_vantage_beams(
-        obstacles, cfg.env.cell_size, cfg.sim.num_beams,
+    beams_list, pose_ids, poses = generate_vantage_beams(
+        obstacles, cfg.env.cell_size, cfg.sim.angular_step,
         num_poses=cfg.sim.num_poses,
         min_clearance=cfg.sim.min_clearance,
         max_range=cfg.sim.max_range,
@@ -616,6 +612,8 @@ def generate_scenario_data(cfg: Config, beam_rng: np.random.Generator,
         fov=cfg.sim.beam_fov,
         rng=beam_rng,
     )
+    if not quiet: print(f"{len(beams_list)} beams from {len(poses)} poses "
+                        f"(one every {cfg.sim.angular_step} deg)")
 
     dev = cfg.device
     y_true = torch.tensor(simulate_gas_integrals(sc.gas_map, beams_list, cfg.env.cell_size, quiet=quiet),

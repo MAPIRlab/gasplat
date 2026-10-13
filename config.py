@@ -1,4 +1,3 @@
-import math
 import torch
 
 from typing import Optional, Tuple
@@ -13,7 +12,7 @@ class EnvironmentParams:
 @dataclass
 class SimulationParams:
     seed: Optional[int] = 0 # Seed for the simulated data (gas map, beams, noise). None: different data on every run
-    num_beams: int = 100 # Total number of TDLAS beams
+    num_beams: int = 100 # Total number of TDLAS beams (procedural maps; scenarios use angular_step)
     
     noise: bool = field(default=False, action="store_true") # Add noise to simulated measurements
     snr_db: int = 30 # Signal-to-noise ratio (dB)
@@ -21,12 +20,13 @@ class SimulationParams:
 
     # --- GADEN scenarios (see utils/gaden_utils.py) ---
     scenario: Optional[str] = None # Scenario package directory. Overrides map/cell size. If None, a procedural map is generated
-    num_poses: Optional[int] = None # Robot vantage poses (num_beams is split evenly among them). None: as many as the coverage target needs
+    num_poses: Optional[int] = None # Robot vantage poses. None: as many as the coverage target needs
+    angular_step: float = 2.0 # Angle between consecutive beams of the sweep at each pose (deg)
     min_clearance: float = 0.3 # Minimum distance from a pose to any obstacle (m)
     max_range: float = 30.0 # Maximum beam length (m)
     min_crossing_angle: float = 30.0 # A free cell is covered once beams from two poses cross it at least this angle apart (deg)
     coverage: float = 0.95 # Fraction of free cells to cover when num_poses is None
-    beam_fov: float = 2 * math.pi # Angular sweep at each pose (rad)
+    beam_fov: float = 360.0 # Angular sweep at each pose (deg)
     normalize_scenario: bool = True # Scale the scenario so the map peaks at 1 (hyperparameters assume that range)
 
 @dataclass
