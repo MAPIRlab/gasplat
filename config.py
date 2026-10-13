@@ -12,8 +12,8 @@ class EnvironmentParams:
 
 @dataclass
 class SimulationParams:
-    seed: Optional[int] = None # Random seed for GT generation
-    num_beams: int = 50 # Total number of TDLAS beams
+    seed: Optional[int] = 0 # Seed for the simulated data (gas map, beams, noise). None: different data on every run
+    num_beams: int = 100 # Total number of TDLAS beams
     
     noise: bool = field(default=False, action="store_true") # Add noise to simulated measurements
     snr_db: int = 30 # Signal-to-noise ratio (dB)

@@ -36,14 +36,17 @@ class EnvironmentContext:
 
 def generate_fractal_gas_distribution(
         grid_size, scale_fraction=0.2, octaves=3, 
-        threshold=0.3, power=2.0, center_bias=2.0):
+        threshold=0.3, power=2.0, center_bias=2.0,
+        rng: np.random.Generator | None = None):
     """
     Generates center-biased, scale-invariant gas distribution using fractal noise.
     
     - scale_fraction: Size of base blobs relative to map size (e.g., 0.15 = 15%).
     - center_bias: How aggressively to pull clouds to the center. 
                    0.0 = no bias (everywhere), >2.0 = tightly packed in center.
+    - rng: Random generator. A fresh, unseeded one if None.
     """
+    rng = rng or np.random.default_rng()
     height, width = grid_size
     
     # Dynamic Scale
@@ -54,7 +57,7 @@ def generate_fractal_gas_distribution(
     frequency, amplitude = 1.0, 1.0
     
     for _ in range(octaves):
-        base = np.random.rand(*grid_size)
+        base = rng.random(grid_size)
         smoothed = gaussian_filter(base, sigma=base_scale / frequency)
         noise += smoothed * amplitude
         amplitude *= 0.5
@@ -135,32 +138,33 @@ def generate_radial_beams(map_size_m: tuple, num_beams: int):
     
     return beams
 
-def generate_random_beams(map_size_m: tuple, num_beams: int):
+def generate_random_beams(map_size_m: tuple, num_beams: int, rng: np.random.Generator | None = None):
     """Generates random TDLAS beams from the perimeter of a map in meters."""
+    rng = rng or np.random.default_rng()
     beams = []
     map_x, map_y = map_size_m
 
     for _ in range(num_beams):
-        start_edge = np.random.choice(['left', 'right', 'bottom', 'top'])
+        start_edge = rng.choice(['left', 'right', 'bottom', 'top'])
         if start_edge == 'left':
-            x0, y0 = 0.0, np.random.uniform(0, map_y)
+            x0, y0 = 0.0, rng.uniform(0, map_y)
         elif start_edge == 'right':
-            x0, y0 = map_x, np.random.uniform(0, map_y)
+            x0, y0 = map_x, rng.uniform(0, map_y)
         elif start_edge == 'bottom':
-            x0, y0 = np.random.uniform(0, map_x), 0.0
+            x0, y0 = rng.uniform(0, map_x), 0.0
         else:
-            x0, y0 = np.random.uniform(0, map_x), map_y
+            x0, y0 = rng.uniform(0, map_x), map_y
 
         end_edges = [edge for edge in ['left', 'right', 'bottom', 'top'] if edge != start_edge]
-        end_edge = np.random.choice(end_edges)
+        end_edge = rng.choice(end_edges)
         if end_edge == 'left':
-            x1, y1 = 0.0, np.random.uniform(0, map_y)
+            x1, y1 = 0.0, rng.uniform(0, map_y)
         elif end_edge == 'right':
-            x1, y1 = map_x, np.random.uniform(0, map_y)
+            x1, y1 = map_x, rng.uniform(0, map_y)
         elif end_edge == 'bottom':
-            x1, y1 = np.random.uniform(0, map_x), 0.0
+            x1, y1 = rng.uniform(0, map_x), 0.0
         else:
-            x1, y1 = np.random.uniform(0, map_x), map_y
+            x1, y1 = rng.uniform(0, map_x), map_y
 
         beams.append(((x0, y0), (x1, y1)))
         
@@ -187,12 +191,11 @@ def generate_horizontal_vertical_beams(map_size_m: tuple, num_beams: int):
     return beams
 
 
-def generate_simple_beams(map_size_m: tuple[float, float], num_beams: int, seed: int | None = None):
+def generate_simple_beams(map_size_m: tuple[float, float], num_beams: int,
+                          rng: np.random.Generator | None = None):
     """Generate a lightweight mixed beam set using the simple beam layouts already in this module."""
     if num_beams <= 0:
         return []
-    if seed is not None:
-        np.random.seed(seed)
 
     generators = [
         generate_random_beams,
@@ -207,7 +210,10 @@ def generate_simple_beams(map_size_m: tuple[float, float], num_beams: int, seed:
     beams = []
     for generator, count in zip(generators, counts):
         if count > 0:
-            beams.extend(generator(map_size_m, count))
+            if generator is generate_random_beams:
+                beams.extend(generator(map_size_m, count, rng=rng))
+            else:
+                beams.extend(generator(map_size_m, count))
 
     return beams[:num_beams]
 
@@ -230,21 +236,20 @@ def generate_obstacle_aware_beams(
     map_size_m: tuple[float, float],
     num_beams: int,
     obstacle_geometry=None,
-    seed: int | None = None,
+    rng: np.random.Generator | None = None,
 ) -> list:
     """Generate beam geometries from the existing simple layout and clip them at obstacles."""
     if num_beams <= 0:
         return []
-    if seed is not None:
-        np.random.seed(seed)
+    rng = rng or np.random.default_rng()
 
     if obstacle_geometry is None:
-        return generate_simple_beams(map_size_m, num_beams, seed=seed)
+        return generate_simple_beams(map_size_m, num_beams, rng=rng)
 
     beams = []
     candidate_count = max(num_beams * 10, 100)
-    candidate_beams = generate_simple_beams(map_size_m, candidate_count, seed=seed)
-    np.random.shuffle(candidate_beams)
+    candidate_beams = generate_simple_beams(map_size_m, candidate_count, rng=rng)
+    rng.shuffle(candidate_beams)
 
     for (x0, y0), (x1, y1) in candidate_beams:
         line = LineString([(x0, y0), (x1, y1)])
@@ -434,7 +439,7 @@ def generate_vantage_beams(obstacles: np.ndarray, cell_size: float, num_beams: i
                            min_clearance: float = 0.3, max_range: float = 30.0,
                            min_angle: float = 30.0, coverage: float = 0.95,
                            min_length: float = 0.2, fov: float = 2 * np.pi,
-                           seed: int | None = None):
+                           rng: np.random.Generator | None = None):
     """Beams shot by a robot that stops at several poses and pans its TDLAS.
 
     Poses come from select_vantage_poses unless given. At each pose the sensor sweeps `fov` radians (centered on a random heading)
@@ -444,13 +449,16 @@ def generate_vantage_beams(obstacles: np.ndarray, cell_size: float, num_beams: i
     Returns (beams, pose_ids, poses): beams as [((x0, y0), (x1, y1)), ...] in
     meters, pose_ids (N,) int array, poses (P, 2) array.
     """
-    rng = np.random.default_rng(seed)
+    rng = rng or np.random.default_rng()
     if poses is None:
         poses = select_vantage_poses(obstacles, cell_size, num_poses, min_clearance,
                                      max_range, min_angle, coverage)
     num_poses = len(poses)
     per_pose = [num_beams // num_poses + (p < num_beams % num_poses) for p in range(num_poses)]
 
+    # Beams leaving through an opening in the map border end on it; clamping
+    # keeps rounding errors from placing that endpoint just outside the map
+    map_w, map_h = obstacles.shape[1] * cell_size, obstacles.shape[0] * cell_size
     beams, pose_ids = [], []
     for p, ((x0, y0), n) in enumerate(zip(poses, per_pose)):
         if n == 0:
@@ -464,8 +472,9 @@ def generate_vantage_beams(obstacles: np.ndarray, cell_size: float, num_beams: i
             d = raycast_grid(obstacles, cell_size, (x0, y0), a, max_range)
             if d < min_length:
                 continue
-            beams.append(((float(x0), float(y0)),
-                          (float(x0 + d * math.cos(a)), float(y0 + d * math.sin(a)))))
+            x1 = min(max(x0 + d * math.cos(a), 0.0), map_w)
+            y1 = min(max(y0 + d * math.sin(a), 0.0), map_h)
+            beams.append(((float(x0), float(y0)), (float(x1), float(y1))))
             pose_ids.append(p)
     return beams, np.asarray(pose_ids, dtype=np.int64), np.asarray(poses)
 
@@ -505,27 +514,35 @@ def simulate_gas_integrals(
 #         GENERATE GROUND TRUTH
 # ==========================================
 
-def add_measurement_noise(y_true, snr_db=30, abs_std=0.0):
+def add_measurement_noise(y_true, snr_db=30, abs_std=0.0, rng: np.random.Generator | None = None):
     """Additive Gaussian noise: relative part set by snr_db, plus an optional
     absolute floor abs_std (same units as y, e.g. ppm*m)."""
+    rng = rng or np.random.default_rng()
     y_true_np = y_true.cpu().numpy()
     signal_power = np.mean(y_true_np**2)
     noise_power = signal_power / (10**(snr_db / 10)) + abs_std**2
-    noise = np.random.normal(0, np.sqrt(noise_power), size=y_true_np.shape)
+    noise = rng.normal(0, np.sqrt(noise_power), size=y_true_np.shape)
     y_noisy = y_true_np + noise
     y_noisy[y_noisy < 0] = 0
     return torch.tensor(y_noisy, dtype=torch.float32, device=y_true.device)
 
+def simulation_rngs(seed: int | None) -> tuple[np.random.Generator, ...]:
+    """Independent generators for the gas map, the beams and the noise.
+
+    Each one comes from its own stream of the seed, so any of them can change
+    (e.g. a different noise level) without altering what the others draw.
+    seed=None gives different data on every call.
+    """
+    return tuple(np.random.default_rng(s) for s in np.random.SeedSequence(seed).spawn(3))
+
 def generate_simulation_data(cfg: Config) -> tuple[MeasurementBatch, EnvironmentContext]:
     """Generates gas distribution (ground truth), beams and measurements"""
     
-    if cfg.sim.seed is not None:
-        np.random.seed(cfg.sim.seed)
-
     quiet = cfg.quiet
+    map_rng, beam_rng, noise_rng = simulation_rngs(cfg.sim.seed)
 
     if cfg.sim.scenario:
-        return generate_scenario_data(cfg)
+        return generate_scenario_data(cfg, beam_rng, noise_rng)
 
     # ----- Ground Truth -----
     if not quiet: print("Generating procedural ground truth...")
@@ -533,14 +550,14 @@ def generate_simulation_data(cfg: Config) -> tuple[MeasurementBatch, Environment
     grid_w = round(map_w / cfg.env.cell_size)
     grid_h = round(map_h / cfg.env.cell_size)
 
-    img_gt = generate_fractal_gas_distribution(grid_size=(grid_h, grid_w))
+    img_gt = generate_fractal_gas_distribution(grid_size=(grid_h, grid_w), rng=map_rng)
 
     # ------ Beams ------
     if not quiet: print("Generating beams...")
     beams_list = generate_simple_beams(
         cfg.env.map_size,
         cfg.sim.num_beams,
-        seed=cfg.sim.seed,
+        rng=beam_rng,
     )
 
     beams_tensor = torch.tensor(beams_list, dtype=torch.float32, device=cfg.device)
@@ -553,7 +570,7 @@ def generate_simulation_data(cfg: Config) -> tuple[MeasurementBatch, Environment
         if not quiet: print(f"Adding noise to the measurements ({cfg.sim.snr_db} dB)...")
         num_beams = len(beams_list)
         if num_beams > 0:
-            measurements = add_measurement_noise(y_true[:num_beams], snr_db=cfg.sim.snr_db)
+            measurements = add_measurement_noise(y_true[:num_beams], snr_db=cfg.sim.snr_db, rng=noise_rng)
         else:
             measurements = y_true
     else:
@@ -564,7 +581,8 @@ def generate_simulation_data(cfg: Config) -> tuple[MeasurementBatch, Environment
         EnvironmentContext(ground_truth=GroundTruth(gas_map=img_gt, y_true=y_true))
     )
 
-def generate_scenario_data(cfg: Config) -> tuple[MeasurementBatch, EnvironmentContext]:
+def generate_scenario_data(cfg: Config, beam_rng: np.random.Generator,
+                           noise_rng: np.random.Generator) -> tuple[MeasurementBatch, EnvironmentContext]:
     """Measurements on a GADEN scenario package (see gaden_utils.py).
 
     Uses cfg.sim.scenario (package directory) and the vantage-point fields of
@@ -596,7 +614,7 @@ def generate_scenario_data(cfg: Config) -> tuple[MeasurementBatch, EnvironmentCo
         min_angle=cfg.sim.min_crossing_angle,
         coverage=cfg.sim.coverage,
         fov=cfg.sim.beam_fov,
-        seed=cfg.sim.seed,
+        rng=beam_rng,
     )
 
     dev = cfg.device
@@ -606,7 +624,7 @@ def generate_scenario_data(cfg: Config) -> tuple[MeasurementBatch, EnvironmentCo
     if cfg.sim.noise:
         if not quiet: print(f"Adding noise to the measurements ({cfg.sim.snr_db} dB)...")
         measurements = add_measurement_noise(measurements, snr_db=cfg.sim.snr_db,
-                                             abs_std=cfg.sim.noise_floor)
+                                             abs_std=cfg.sim.noise_floor, rng=noise_rng)
 
     return (
         MeasurementBatch(beams=torch.tensor(beams_list, dtype=torch.float32, device=dev),

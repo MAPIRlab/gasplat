@@ -24,6 +24,7 @@ from utils.sim_utils import (
     MeasurementBatch,
     generate_fractal_gas_distribution,
     generate_obstacle_aware_beams,
+    simulation_rngs,
     simulate_gas_integrals,
 )
 
@@ -49,8 +50,9 @@ def create_toy_environment(
     grid_h, grid_w = validate_grid(cfg)
     obstacles = create_obstacle_scenario(scenario, (grid_h, grid_w))
 
+    map_rng, beam_rng, _ = simulation_rngs(cfg.sim.seed)
     gas_gt = generate_fractal_gas_distribution(
-        grid_size=(grid_h, grid_w), scale_fraction=0.3, center_bias=0.5
+        grid_size=(grid_h, grid_w), scale_fraction=0.3, center_bias=0.5, rng=map_rng
     )
     gas_gt[obstacles > 0.5] = 0.0
 
@@ -59,7 +61,7 @@ def create_toy_environment(
         cfg.env.map_size,
         cfg.sim.num_beams,
         obstacle_geometry=obstacle_geometry,
-        seed=cfg.sim.seed,
+        rng=beam_rng,
     )
     measurements_list = simulate_gas_integrals(
         gas_gt, beams_list, cfg.env.cell_size, quiet=cfg.quiet
