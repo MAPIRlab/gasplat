@@ -2,12 +2,20 @@
 GADEN -> GASPLAT scenario extraction.
 
 Reads one snapshot (iteration) of a GADEN simulation (filament logfile) and
-the 3D occupancy grid, extracts the horizontal 2D slice of gas concentration
-at the beam height, and saves a self-contained "scenario package" that GASPLAT
+the 3D occupancy grid straight from a house archive of the VGR dataset
+(HouseNN.zip), extracts the horizontal 2D slice of gas concentration at the
+beam height, and saves a self-contained "scenario package" that GASPLAT
 experiments load without touching GADEN again. The distribution is assumed
 quasi-static, so every beam is measured on that single snapshot.
 
-Scenario package (one directory):
+VGR dataset (Ojeda et al., JIRS 2023): 30 houses, each archive holding the
+occupancy grid and four gas simulations named after their inlets and outlets
+and wind speed, e.g. "2,4-1_slow" (one source each, 2000 iterations saved
+every 0.5 s).
+
+Scenario package (one directory per snapshot, named automatically as
+<house>_<simulation>_h<height above floor>_it<iteration>, e.g.
+house01_2,4-1_slow_h0.85_it1999, under data/scenarios by default):
     scenario.npz   gas_map   (H, W) float32  concentration [ppm]
                    occupancy (H, W) uint8    0 = free, 1 = obstacle, 2 = outlet
     meta.json      cell size, world origin of the local frame, slice height,
@@ -21,9 +29,10 @@ Conventions (match the rest of GASPLAT):
     - meta["origin_world"] is the world (GADEN) coordinate of local (0, 0).
 
 Usage:
-    python -m utils.gaden_utils SIM_DIR OUT_DIR --height 0.4 --iteration 1999 \
-        [--occupancy path/to/OccupancyGrid3D.csv]
-    (the occupancy file defaults to SIM_DIR/OccupancyGrid3D.csv)
+    python -m utils.gaden_utils HOUSE_ZIP                      # list its simulations
+    python -m utils.gaden_utils HOUSE_ZIP SIMULATION \
+        [--height 0.85] [--iteration 1999] [--root data/scenarios]
+    (height above the floor in meters; the last iteration by default)
 
 Only filament-mode results from GADEN 1.x/2.x (e.g. the VGR dataset) are
 supported. Results written by GADEN >= 3 (gaden_core / gaden_gui) start with a
@@ -35,13 +44,18 @@ import argparse
 import json
 import math
 import os
+import re
 import struct
+import zipfile
 import zlib
 from dataclasses import dataclass
 
 import numpy as np
 
 FREE, OBSTACLE, OUTLET = 0, 1, 2
+
+# Where scenario packages are written by default (<repo>/data/scenarios)
+DEFAULT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "data", "scenarios"))
 
 
 # ==========================================
@@ -74,15 +88,14 @@ class GadenGrid:
         return self.env_min[2] + k * self.cell_size
 
 
-def read_occupancy(path: str) -> GadenGrid:
-    """Parse GADEN's OccupancyGrid3D.csv.
+def parse_occupancy(text: str) -> GadenGrid:
+    """Parse the contents of GADEN's OccupancyGrid3D.csv.
 
     Header: 4 comment lines (#env_min, #env_max, #num_cells, #cell_size).
     Body: one block per z layer, separated by ';' lines. Inside a block, each
     line is one x index and each value one y index.
     """
-    with open(path) as f:
-        lines = f.read().splitlines()
+    lines = text.splitlines()
 
     def header_values(prefix):
         line = next(l for l in lines[:4] if l.startswith(prefix))
@@ -123,18 +136,16 @@ class GadenIteration:
     wind_iteration: int
 
 
-def read_iteration(path: str) -> GadenIteration:
-    """Read one GADEN filament logfile (format versions 1 and 2.x).
+def parse_iteration(raw: bytes) -> GadenIteration:
+    """Parse one GADEN filament logfile (format versions 1 and 2.x).
 
     The environment bounds stored in some version-1 headers are corrupted
     (this affects the VGR dataset), so they are skipped here and taken from
     the occupancy file instead.
     """
-    with open(path, "rb") as f:
-        raw = f.read()
     if raw.startswith(b"GADEN_RESULT"):
         raise NotImplementedError(
-            f"{path} was written by GADEN >= 3 (gaden_core/gaden_gui). "
+            "Logfile written by GADEN >= 3 (gaden_core/gaden_gui). "
             "Read it with gaden_core's PlaybackSimulation instead.")
     data = zlib.decompress(raw)
 
@@ -161,7 +172,7 @@ def read_iteration(path: str) -> GadenIteration:
         wind_it = struct.unpack_from("=i", data, off)[0]; off += 4
         rec = 4 + struct.calcsize(fil_fmt)
     else:
-        raise ValueError(f"Unknown GADEN logfile version {major} in {path}")
+        raise ValueError(f"Unknown GADEN logfile version {major}")
 
     n = (len(data) - off) // rec
     dtype = np.float64 if fil_fmt == "=dddd" else np.float32
@@ -169,6 +180,52 @@ def read_iteration(path: str) -> GadenIteration:
     filaments = body[:, 4:].copy().view(dtype).reshape(n, 4).astype(np.float64)
 
     return GadenIteration(filaments, tuple(src), float(total_moles), float(moles_air), int(wind_it))
+
+
+# ==========================================
+#              VGR HOUSE ARCHIVES
+# ==========================================
+
+class VGRHouse:
+    """One house of the VGR dataset, read straight from its zip archive.
+
+    The archive holds HouseNN/OccupancyGrid3D.csv and, for every simulation,
+    HouseNN/gas_simulations/<simulation>/<results dir>/iteration_<n>.
+    """
+
+    def __init__(self, zip_path: str):
+        self.path = zip_path
+        self.zip = zipfile.ZipFile(zip_path)
+        self.name = os.path.splitext(os.path.basename(zip_path))[0]
+        self._results: dict[str, str] = {}           # simulation -> results dir
+        self._iterations: dict[str, list[int]] = {}
+        pattern = re.compile(rf"{re.escape(self.name)}/gas_simulations/([^/]+)/([^/]+)/iteration_(\d+)")
+        for member in self.zip.namelist():
+            if m := pattern.fullmatch(member):
+                sim = m.group(1)
+                self._results[sim] = f"{self.name}/gas_simulations/{sim}/{m.group(2)}"
+                self._iterations.setdefault(sim, []).append(int(m.group(3)))
+        for its in self._iterations.values():
+            its.sort()
+
+    @property
+    def simulations(self) -> list[str]:
+        return sorted(self._results)
+
+    def iterations(self, simulation: str) -> list[int]:
+        return self._iterations[self._check(simulation)]
+
+    def occupancy(self) -> GadenGrid:
+        return parse_occupancy(self.zip.read(f"{self.name}/OccupancyGrid3D.csv").decode())
+
+    def iteration(self, simulation: str, n: int) -> GadenIteration:
+        return parse_iteration(self.zip.read(f"{self._results[self._check(simulation)]}/iteration_{n}"))
+
+    def _check(self, simulation: str) -> str:
+        if simulation not in self._results:
+            raise KeyError(f"{self.name} has no simulation '{simulation}'. "
+                           f"Available: {', '.join(self.simulations)}")
+        return simulation
 
 
 # ==========================================
@@ -252,45 +309,58 @@ def _to_map(a_xy: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(a_xy.T)
 
 
-def extract_scenario(sim_dir: str, out_dir: str, height: float, iteration: int,
-                     occupancy_file: str | None = None,
-                     crop_margin: int = 1, cutoff_sigmas: float = 5.0) -> dict:
-    """Build a scenario package from one snapshot of a GADEN simulation.
+def scenario_name(house: str, simulation: str, height_above_floor: float, iteration: int) -> str:
+    """Directory name of a scenario package, e.g. house01_2,4-1_slow_h0.85_it1999."""
+    return f"{house.lower()}_{simulation}_h{height_above_floor:.2f}_it{iteration}"
 
-    height: world z [m] of the beam plane (GADEN coordinates).
-    iteration: which iteration_* file (snapshot) to slice.
+
+def extract_scenario(house_zip: str, simulation: str, root: str = DEFAULT_ROOT,
+                     height: float = 0.85, iteration: int | None = None,
+                     crop_margin: int = 1, cutoff_sigmas: float = 5.0) -> tuple[str, dict]:
+    """Build a scenario package from one snapshot of a VGR simulation.
+
+    The package is written to root/<scenario_name(...)>, named after the
+    height of the slice actually taken, and its path is returned with the
+    metadata.
+
+    height: height of the beam plane above the floor [m]. The slice is the
+    occupancy layer containing it (0.1 m layers in VGR).
+    iteration: which snapshot to slice; the last one saved by default.
     crop_margin: cells kept around the free space when cropping the map.
     """
-    occupancy_file = occupancy_file or os.path.join(sim_dir, "OccupancyGrid3D.csv")
-    grid = read_occupancy(occupancy_file)
-    k = grid.layer_index(height)
+    house = VGRHouse(house_zip)
+    if iteration is None:
+        iteration = house.iterations(simulation)[-1]
+    grid = house.occupancy()
+    k = grid.layer_index(grid.floor_height() + height)
 
     # --- 2D occupancy of the beam layer, cropped to the free space ---
     layer = grid.cells[:, :, k]
     free_xy = np.argwhere(layer == FREE)
     if len(free_xy) == 0:
-        raise ValueError(f"Layer {k} (height {height} m) has no free cells.")
+        raise ValueError(f"Layer {k} ({height} m above the floor) has no free cells.")
     lo = np.maximum(free_xy.min(axis=0) - crop_margin, 0)
     hi = np.minimum(free_xy.max(axis=0) + crop_margin + 1, layer.shape)
     crop = (slice(lo[0], hi[0]), slice(lo[1], hi[1]))
     occupancy = _to_map(layer[crop])
 
     # --- concentration slice ---
-    it = read_iteration(os.path.join(sim_dir, f"iteration_{iteration}"))
+    it = house.iteration(simulation, iteration)
     gas_map = _to_map(concentration_slice(grid, it, k, cutoff_sigmas)[crop]).astype(np.float32)
     source = it.source_position
 
     cs = grid.cell_size
     origin_world = (grid.env_min[0] + lo[0] * cs, grid.env_min[1] + lo[1] * cs)
     meta = {
-        "sim_dir": os.path.abspath(sim_dir),
+        "house_zip": os.path.abspath(house_zip),
+        "house": house.name,
+        "simulation": simulation,
         "iteration": iteration,
         "num_filaments": len(it.filaments),
         "cell_size": cs,
         "map_size_m": [occupancy.shape[1] * cs, occupancy.shape[0] * cs],   # (width, height)
         "grid_shape_hw": list(occupancy.shape),
         "origin_world": list(origin_world),
-        "height_world": height,
         "layer_index": k,
         "layer_center_z": grid.env_min[2] + (k + 0.5) * cs,
         "height_above_floor": grid.env_min[2] + (k + 0.5) * cs - grid.floor_height(),
@@ -301,12 +371,14 @@ def extract_scenario(sim_dir: str, out_dir: str, height: float, iteration: int,
         "occupancy_codes": {"free": FREE, "obstacle": OBSTACLE, "outlet": OUTLET},
     }
 
+    meta["name"] = scenario_name(house.name, simulation, meta["height_above_floor"], iteration)
+    out_dir = os.path.join(root, meta["name"])
     os.makedirs(out_dir, exist_ok=True)
     np.savez_compressed(os.path.join(out_dir, "scenario.npz"), gas_map=gas_map, occupancy=occupancy)
     with open(os.path.join(out_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
     save_preview(os.path.join(out_dir, "preview.png"), gas_map, occupancy, meta)
-    return meta
+    return out_dir, meta
 
 
 @dataclass
@@ -356,13 +428,27 @@ def save_preview(path, gas_map, occupancy, meta, beams=None):
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="Extract a GASPLAT scenario from a GADEN simulation snapshot.")
-    p.add_argument("sim_dir")
-    p.add_argument("out_dir")
-    p.add_argument("--height", type=float, required=True, help="beam plane, world z [m]")
-    p.add_argument("--iteration", type=int, required=True, help="snapshot to extract (iteration_N file)")
-    p.add_argument("--occupancy", default=None, help="OccupancyGrid3D.csv (default: in sim_dir)")
+    p = argparse.ArgumentParser(description="Extract a GASPLAT scenario from a VGR house archive.")
+    p.add_argument("house_zip", help="HouseNN.zip of the VGR dataset")
+    p.add_argument("simulation", nargs="?", help="e.g. 2,4-1_slow (omit to list them)")
+    p.add_argument("--height", type=float, default=0.85, help="beam plane above the floor [m]")
+    p.add_argument("--iteration", type=int, default=None, help="snapshot to extract (default: the last one)")
+    p.add_argument("--root", default=DEFAULT_ROOT, help="directory for the scenario package (default: data/scenarios)")
     args = p.parse_args()
-    meta = extract_scenario(args.sim_dir, args.out_dir, args.height, args.iteration, args.occupancy)
-    print(json.dumps({k: meta[k] for k in ("grid_shape_hw", "map_size_m", "layer_center_z",
-                                           "height_above_floor", "source_local", "num_filaments")}, indent=2))
+
+    if args.simulation is None:
+        house = VGRHouse(args.house_zip)
+        for sim in house.simulations:
+            its = house.iterations(sim)
+            src = house.iteration(sim, its[0]).source_position
+            print(f"{sim:16s} {len(its)} iterations ({its[0]}-{its[-1]}), "
+                  f"source ({src[0]:.2f}, {src[1]:.2f}, {src[2]:.2f})")
+    else:
+        out_dir, meta = extract_scenario(args.house_zip, args.simulation, args.root,
+                                         args.height, args.iteration)
+        print(f"Scenario written to {out_dir}")
+        if abs(meta["height_above_floor"] - args.height) > 1e-6:
+            print(f"Note: the slice is the layer centered {meta['height_above_floor']:.2f} m above the floor "
+                  f"(requested {args.height} m)")
+        print(json.dumps({k: meta[k] for k in ("grid_shape_hw", "map_size_m", "layer_center_z",
+                                               "height_above_floor", "source_local", "num_filaments")}, indent=2))
