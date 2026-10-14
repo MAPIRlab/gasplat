@@ -590,12 +590,6 @@ def generate_scenario_data(cfg: Config, beam_rng: np.random.Generator,
 
     quiet = cfg.quiet
     sc = load_scenario(cfg.sim.scenario)
-    if cfg.sim.normalize_scenario:
-        # The hyperparameters are tuned for maps peaking at 1 (as the procedural
-        # generator produces), so ppm maps are brought to that range
-        ppm_scale = float(sc.gas_map.max())
-        sc.gas_map = sc.gas_map / ppm_scale
-        if not quiet: print(f"Scenario normalized to unit peak (1 = {ppm_scale:.2f} ppm)")
     cfg.env.cell_size = sc.meta["cell_size"]
     cfg.env.map_size = tuple(sc.meta["map_size_m"])
     obstacles = sc.obstacles

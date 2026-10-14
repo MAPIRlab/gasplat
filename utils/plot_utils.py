@@ -94,6 +94,7 @@ def plot_training_results(gaussians: GasSplattingModel, batch: MeasurementBatch,
     obstacles = environment.obstacles
     free = np.ones_like(ground_truth, dtype=bool) if obstacles is None else ~(obstacles > 0.5)
     rmse = np.sqrt(np.mean((img_pred - ground_truth)[free]**2))
+    nrmse = rmse / max(ground_truth[free].max(), 1e-12)
     walls = None if obstacles is None else np.ma.masked_where(~(obstacles > 0.5), np.ones_like(ground_truth))
 
     fig = plt.figure(figsize=(12, 8)) 
@@ -118,7 +119,7 @@ def plot_training_results(gaussians: GasSplattingModel, batch: MeasurementBatch,
 
     # 3. Reconstruction Grid (Top Right)
     ax3 = fig.add_subplot(gs[0, 2])
-    ax3.set_title(f"GS Reconstruction (Grid)\nRMSE = {rmse:.4f}")
+    ax3.set_title(f"GS Reconstruction (Grid)\nRMSE = {rmse:.4g} ({100 * nrmse:.1f}% of peak)")
     ax3.imshow(img_pred, origin='lower', extent=(0, map_w, 0, map_h), cmap='viridis', vmin=vmin, vmax=vmax)
 
     if walls is not None:
@@ -135,7 +136,7 @@ def plot_training_results(gaussians: GasSplattingModel, batch: MeasurementBatch,
     ax4.set_title(f"Loss History (Final Loss = {results.loss_history[-1]:.4f})")
     
     # Plot standard Loss on the left axis
-    line_loss = ax4.plot(results.loss_history, color='blue', alpha=0.6, label="Total Loss (L1)")
+    line_loss = ax4.plot(results.loss_history, color='blue', alpha=0.6, label="Total Loss (relative L1)")
     ax4.set_ylabel("Total Loss", color='blue')
     ax4.set_yscale('log')
     ax4.set_xlim(0, len(results.loss_history))

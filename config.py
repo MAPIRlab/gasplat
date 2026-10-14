@@ -27,7 +27,6 @@ class SimulationParams:
     min_crossing_angle: float = 30.0 # A free cell is covered once beams from two poses cross it at least this angle apart (deg)
     coverage: float = 0.95 # Fraction of free cells to cover when num_poses is None
     beam_fov: float = 360.0 # Angular sweep at each pose (deg)
-    normalize_scenario: bool = True # Scale the scenario so the map peaks at 1 (hyperparameters assume that range)
 
 @dataclass
 class TrainParams:
@@ -37,6 +36,8 @@ class TrainParams:
     concentration_lr: float = 0.005 # Concentration learning rate
 
     iterations: int = 1500 # Max number of iterations
+
+    scale_update_factor: float = 2.0 # Raise the concentration scale when a batch exceeds it by this factor
 
     obstacle_lambda: float = 0.1 # Weight for the obstacle penalty term in the loss function
     obstacle_sigma_k: float = 2.0 # Margin kept between a Gaussian and an obstacle, in standard deviations along the evaluated direction
@@ -54,7 +55,8 @@ class TrainParams:
 class DensificationParams:
     gradient_threshold: float = 0.001 # Threshold for gradient-based densification
     scale_threshold: float = 0.05 # Threshold used by original densification method. It decides whether the Gaussian should be splitted or cloned
-    prune_threshold: float = 0.005 # Threshold for pruning Gaussians with low concentration
+    prune_threshold: float = 0.005 # Prune Gaussians below this concentration (relative to the concentration scale)
+    injection_concentration: float = 0.01 # Concentration of injected Gaussians (relative to the concentration scale)
     densify_from: int = 100 # Densification will start at this iteration
     densify_until: int = 750 # Densification will stop at this iteration
     densify_interval: int = 50 # Iteration interval for densification

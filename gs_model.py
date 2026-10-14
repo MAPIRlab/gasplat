@@ -25,6 +25,9 @@ class GasSplattingModel(nn.Module):
         self.splits = 0
         self.clones = 0
 
+        # Unit (ppm) concentrations are learned in, set from the measurements. None until gas is measured
+        self.concentration_scale: float | None = None
+
         # --- Model parameters ---
         dev = cfg.device
         self._pos = nn.Parameter(torch.rand(initial_gaussians, 2, device=dev) * self.map_size)
@@ -38,7 +41,7 @@ class GasSplattingModel(nn.Module):
 
         Args:
             pos (Tensor (K, 2)): Initial positions (x, y) in map coordinates.
-            concentration (Tensor (0,) or (K,)): Initial concentration/weight per gaussian.
+            concentration (Tensor (0,) or (K,)): Initial concentration per gaussian, relative to the concentration scale.
             std (Tensor (0,), (K,) or (K, 2)): Initial standard deviation.
         """
 
@@ -90,12 +93,33 @@ class GasSplattingModel(nn.Module):
         """
         return torch.exp(self._scale)
 
+    @property
+    def scale(self) -> float:
+        """Concentration scale, 1 while it is unset."""
+        return self.concentration_scale or 1.0
+
+    def get_relative_concentration(self):
+        """Concentration of the Gaussians in units of the concentration scale, (K,)."""
+        return nn.functional.softplus(self._concentration)
+
     def get_concentration(self):
         """
         Computes the concentration (weight) of the Gaussians.
         Returns:
             concentration: Tensor of shape (K,) representing the concentration of the Gaussians."""
-        return nn.functional.softplus(self._concentration)
+        return self.scale * self.get_relative_concentration()
+
+    def _concentration_latent(self, concentration: torch.Tensor) -> torch.Tensor:
+        """Latent parameter of a concentration given in physical units."""
+        return inverse_softplus(concentration / self.scale)
+
+    def set_concentration_scale(self, scale: float):
+        """Changes the concentration scale, keeping the physical concentration of every Gaussian.
+        The optimizer state refers to the old latents and must be reset afterwards."""
+        with torch.no_grad():
+            relative = self.get_concentration() / scale
+            self._concentration.data.copy_(inverse_softplus(relative.clamp_min(1e-12)))
+        self.concentration_scale = scale
 
     def get_rotation_matrix(self):
         """
@@ -154,9 +178,10 @@ class GasSplattingModel(nn.Module):
 
         return compute_definite_integral(pos, covariance_inverse, concentration, beams)
     
-    def inject_gaussians(self, optimizer: torch.optim.Optimizer, pos: torch.Tensor, scale: float, concentration: float = 0.01):
+    def inject_gaussians(self, optimizer: torch.optim.Optimizer, pos: torch.Tensor, scale: float, concentration: float):
         """
         Injects new Gaussians into the model with specified parameters.
+        The concentration is given in units of the concentration scale.
         """
         N = pos.shape[0]
         if N == 0: return
@@ -308,7 +333,7 @@ class GasSplattingModel(nn.Module):
 
     def clone(self, optimizer: torch.optim.Optimizer, mask):
         new_pos = self._pos[mask]
-        new_concentration = inverse_softplus(self.get_concentration()[mask] * 0.5)
+        new_concentration = self._concentration_latent(self.get_concentration()[mask] * 0.5)
         new_scale = self._scale[mask]
         new_rotation = self._rotation[mask]
 
@@ -351,7 +376,7 @@ class GasSplattingModel(nn.Module):
         new_pos = inverse_sigmoid(new_pos, self.map_size)
 
         # Divide original concentration by N
-        new_concentration = inverse_softplus(
+        new_concentration = self._concentration_latent(
             self.get_concentration()[mask].repeat(N) * (1 / N)
         )
 
@@ -425,7 +450,7 @@ class GasSplattingModel(nn.Module):
         
         # Mass Conservation (Concentration)
         new_concs = concs / (2.0 * c_tensor_sqrt)
-        new_concentration = inverse_softplus(torch.cat([new_concs, new_concs], dim=0))
+        new_concentration = self._concentration_latent(torch.cat([new_concs, new_concs], dim=0))
         
         new_rotation = self._rotation[mask].repeat(N)
         
@@ -504,7 +529,7 @@ class GasSplattingModel(nn.Module):
         # --- Prune ---
         num_prunes = 0
         if self.num_gaussians > 1:
-            prune_mask = (self.get_concentration() < self.densify_cfg.prune_threshold).view(-1)
+            prune_mask = (self.get_relative_concentration() < self.densify_cfg.prune_threshold).view(-1)
             num_prunes = int(prune_mask.sum().item())
             self.prune(optimizer, prune_mask)
 

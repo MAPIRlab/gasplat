@@ -108,3 +108,10 @@ def compute_definite_integral(pos, cov_inv, concentration, beams):
     y_pred = torch.matmul(integral_matrix, concentration) # (N,)
 
     return y_pred
+
+def estimate_concentration_scale(beams: torch.Tensor, measurements: torch.Tensor) -> float:
+    """Largest path-averaged concentration of a batch, max_n y_n / l_n (ppm). 0 if no beam carries gas."""
+    if measurements.numel() == 0:
+        return 0.0
+    lengths = torch.norm(beams[:, 1, :] - beams[:, 0, :], dim=1).clamp_min(1e-6)
+    return float((measurements / lengths).max().clamp_min(0.0))

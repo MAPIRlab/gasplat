@@ -6,6 +6,7 @@ from config import Config
 from gs_model import GasSplattingModel
 from utils.sim_utils import MeasurementBatch
 from utils.densification_utils import extract_candidate_positions
+from utils.gaussian_utils import estimate_concentration_scale
 
 @dataclass
 class InitializationData:
@@ -43,7 +44,7 @@ def injection_initialization(batch: MeasurementBatch, cfg: Config):
     std = torch.full((num_final,), init_std_val, dtype=torch.float32, device=cfg.device)
     # Same value the injection uses, so initialization is the injection applied
     # to an empty model rather than a separate procedure
-    concentration = torch.full((num_final,), 0.01, dtype=torch.float32, device=cfg.device)
+    concentration = torch.full((num_final,), cfg.densify.injection_concentration, dtype=torch.float32, device=cfg.device)
     
     return InitializationData(pos=final_pos, concentration=concentration, std=std)
 
@@ -63,8 +64,13 @@ def setup_gs_model(batch: MeasurementBatch, cfg: Config) -> tuple[GasSplattingMo
         
     initial_gaussians = init_data.pos.shape[0]
 
+    # Set the scale first: initial concentrations are relative to it
+    batch_scale = estimate_concentration_scale(batch.beams, batch.measurements)
+
     if initial_gaussians > 0:
         model = GasSplattingModel(initial_gaussians, cfg).to(cfg.device)
+        if batch_scale > 0:
+            model.set_concentration_scale(batch_scale)
         model.initialize_gaussians(
             init_data.pos.to(cfg.device), 
             init_data.concentration.to(cfg.device), 
@@ -72,6 +78,8 @@ def setup_gs_model(batch: MeasurementBatch, cfg: Config) -> tuple[GasSplattingMo
         )
     else:
         model = GasSplattingModel(1, cfg).to(cfg.device)
+        if batch_scale > 0:
+            model.set_concentration_scale(batch_scale)
         init_data.pos = model.get_pos().detach().cpu()
 
     return model, init_data

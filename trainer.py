@@ -11,6 +11,7 @@ from config import Config
 from gs_model import GasSplattingModel
 from utils.sim_utils import EnvironmentContext, MeasurementBatch
 from utils.densification_utils import extract_candidate_positions
+from utils.gaussian_utils import estimate_concentration_scale
 from utils.obstacle_utils import compute_esdf, compute_esdf_gradient, compute_aasdf
 
 
@@ -41,6 +42,10 @@ class Trainer:
     def __init__(self, model: GasSplattingModel, cfg: Config, environment: EnvironmentContext | None = None, max_buffer_size: int | None = None):
         self.model = model
         self.ground_truth = environment.ground_truth.gas_map if environment and environment.ground_truth else None
+        # Evaluation only looks at free cells, where gas can actually be
+        self.eval_mask = (~(environment.obstacles > 0.5)
+                          if environment and environment.obstacles is not None and self.ground_truth is not None
+                          else None)
         self.cfg = cfg
         if self.cfg.train.live_vis:
             from visualization.live_visualizer import LiveVisualizer
@@ -160,8 +165,9 @@ class Trainer:
         y_pred = self.model(self.buffer_beams)
         self.last_prediction = y_pred.detach()
 
-        # Weigthed measurements loss
-        data_loss = torch.mean(self.buffer_weights * torch.abs(y_pred - self.buffer_measurements))
+        # Weighted measurements loss, relative to the concentration scale
+        scale = self.model.scale
+        data_loss = torch.mean(self.buffer_weights * torch.abs(y_pred - self.buffer_measurements)) / scale
 
         # Backward the data loss on its own so the densification gradient
         # accumulator only reflects gradients coming from the measurements,
@@ -228,7 +234,7 @@ class Trainer:
             # term, and stops fading a Gaussian out from dodging it.
             obstacle_loss = self.cfg.train.obstacle_lambda * torch.sum(
                 (esdf_violation + aasdf_violation.sum(dim=-1)) * concentrations.detach()
-            )
+            ) / scale
 
             # Backward separately so it never affects the densification accumulator
             obstacle_loss.backward()
@@ -271,12 +277,28 @@ class Trainer:
             self.model.inject_gaussians(
                 optimizer=self.optimizer, 
                 pos=final_pos, 
-                scale=init_scale
+                scale=init_scale,
+                concentration=self.cfg.densify.injection_concentration,
             )
             
         return num_injected
 
+    def update_concentration_scale(self, batch_data: MeasurementBatch):
+        """Raises the concentration scale when a batch exceeds it by scale_update_factor.
+        It never decreases, since earlier batches stay in the buffer."""
+        batch_scale = estimate_concentration_scale(batch_data.beams, batch_data.measurements)
+        current = self.model.concentration_scale
+        if batch_scale <= 0 or (current is not None and batch_scale <= self.cfg.train.scale_update_factor * current):
+            return
+
+        self.model.set_concentration_scale(batch_scale)
+        self.optimizer.state.clear()  # Adam moments refer to the old latents
+        self.last_prediction = None
+        if not self.cfg.quiet and current is not None:
+            tqdm.write(f"Concentration scale raised from {current:.4g} to {batch_scale:.4g} ppm")
+
     def train(self, batch_data: MeasurementBatch) -> BatchResults:
+        self.update_concentration_scale(batch_data)
         self.update_buffers(batch_data)
 
         # Early stopping init
@@ -345,7 +367,10 @@ class Trainer:
             # --- Model evaluation ---
             if self.cfg.train.do_eval and iteration % self.cfg.train.eval_interval == 0:
                 current_map = self.model.render_map(cell_size=self.cfg.env.cell_size)
-                rmse = float(np.sqrt(np.mean((current_map - self.ground_truth)**2)))
+                error = current_map - self.ground_truth
+                if self.eval_mask is not None:
+                    error = error[self.eval_mask]
+                rmse = float(np.sqrt(np.mean(error**2)))
                 self.results.rmse_history[self.global_iteration] = rmse
             # ----------------------------
 
