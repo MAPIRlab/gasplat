@@ -325,7 +325,8 @@ class Trainer:
 
             if iteration > self.cfg.densify.densify_until:
                 # Check for significant improvement
-                if ema_loss < best_ema_loss - self.cfg.train.early_stopping_min_delta:
+                # Relative improvement, so that the criterion does not depend on how small the loss is
+                if ema_loss < best_ema_loss * (1 - self.cfg.train.early_stopping_min_delta):
                     best_ema_loss = ema_loss
                     patience_counter = 0  # Reset patience if we hit a new best
                 else:
