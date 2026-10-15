@@ -1,12 +1,17 @@
 import os
 import copy
 import json
+import time
 import datetime
+import multiprocessing
 import torch
 import numpy as np
 from skimage.metrics import structural_similarity as ssim
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+from config import Config
+from trainer import Trainer
+from utils.init_utils import setup_gs_model
 from utils.sim_utils import generate_simulation_data
 from methods.tomography import create_system_matrix_sparse
 from methods.registry import run_gas_splatting
@@ -94,3 +99,78 @@ def merge_local_results(results, local_results):
                     results[metric][method][x_value].append(value)
             else:
                 results[metric][method].append(method_value)
+
+# ==========================================
+#            SCENARIO EXPERIMENTS
+# ==========================================
+
+def gas_map_metrics(gt: np.ndarray, pred: np.ndarray, obstacles: np.ndarray | None = None) -> dict:
+    """Reconstruction metrics, computed on the free cells where gas can be.
+
+    nrmse: RMSE divided by the ground-truth peak, comparable across scenarios.
+    peak_ratio: reconstructed peak / true peak.
+    mass_error: relative error of the total amount of gas.
+    leak: fraction of the reconstructed gas that lies inside obstacles.
+    """
+    free = np.ones(gt.shape, dtype=bool) if obstacles is None else ~(obstacles > 0.5)
+    g, p = gt[free], pred[free]
+    peak = max(float(g.max()), 1e-12)
+    rmse = float(np.sqrt(np.mean((p - g) ** 2)))
+    return {
+        "rmse": rmse,
+        "nrmse": rmse / peak,
+        "peak_ratio": float(p.max()) / peak,
+        "mass_error": float(p.sum() - g.sum()) / max(float(g.sum()), 1e-12),
+        "leak": float(pred[~free].sum()) / max(float(pred.sum()), 1e-12),
+    }
+
+
+def run_scenario(cfg: Config) -> tuple[dict, np.ndarray]:
+    """Simulates the measurements of cfg.sim.scenario, fits GASPLAT to them and evaluates it.
+
+    Returns the metrics (see gas_map_metrics, plus model and run statistics)
+    and the reconstructed map at the cell size of the scenario.
+    """
+    batch, environment = generate_simulation_data(cfg)
+
+    t_start = time.time()
+    model, _ = setup_gs_model(batch, cfg)
+    trainer = Trainer(model, cfg, environment=environment)
+    trainer.train(batch)
+    training = trainer.finish()
+    fit_time = time.time() - t_start
+
+    pred = model.render_map(cell_size=cfg.env.cell_size)
+    metrics = gas_map_metrics(environment.ground_truth.gas_map, pred, environment.obstacles)
+    metrics.update({
+        "scenario": os.path.basename(os.path.normpath(cfg.sim.scenario)) if cfg.sim.scenario else None,
+        "beams": int(batch.measurements.shape[0]),
+        "poses": int(batch.pose_ids.max()) + 1 if batch.pose_ids is not None else None,
+        "gaussians": model.num_gaussians,
+        "iterations": len(training.loss_history),
+        "final_loss": training.loss_history[-1],
+        "concentration_scale": model.concentration_scale,
+        "time": fit_time,
+    })
+    return metrics, pred
+
+
+def _run_scenario_task(task):
+    key, cfg = task
+    setup_worker_env()
+    metrics, pred = run_scenario(cfg)
+    return key, metrics, pred
+
+
+def yield_scenario_runs(tasks: list[tuple], max_workers: int = 4):
+    """Runs run_scenario for every (key, cfg) task in parallel processes and
+    yields (key, metrics, pred) as they finish.
+
+    The processes are spawned rather than forked, so that each one can use CUDA.
+    With several workers the measured times are only indicative.
+    """
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=max_workers, mp_context=context) as executor:
+        futures = [executor.submit(_run_scenario_task, (key, copy.deepcopy(cfg))) for key, cfg in tasks]
+        for future in as_completed(futures):
+            yield future.result()

@@ -102,6 +102,16 @@ This will generate simulation data (ground truth, beam geometry, and measurement
 
 The `scripts/` directory contains various executable files designed to test, validate, and compare different aspects of the method:
 
+* `make_scenarios.py`: Extracts the GADEN scenarios of the tuning and held-out sets (listed in `utils/scenario_sets.py`) from the VGR house archives into `data/scenarios`.
+
+* `benchmark.py`: Runs Gas Splatting on a scenario set and reports, for every scenario, the normalized RMSE, recovered peak, mass error, gas inside obstacles, Gaussians and time, with a ground truth vs. reconstruction grid. Run it after any change to check that nothing got worse.
+
+* `sweep.py`: One-at-a-time hyperparameter sweep on a scenario set. Each parameter is varied on its own and gets a plot of every metric against its value.
+
+* `scale_invariance.py`: Checks that the reconstruction does not depend on the absolute concentration level, by repeating a run with the measurements multiplied by several factors.
+
+* `noise_first.py`: Incremental run whose first batches only measure noise, checking that the concentration scale is raised when the gas is found.
+
 * `compare_methods.py`: Compares Gas Splatting against state-of-the-art baselines. This script generates the visual reconstruction comparison grid shown in the performance section above.
 
 * `densification_benchmark.py`: Runs benchmarks across multiple random seeds to compare the performance of a 3DGS-inspired adaptive densification strategy (split + clone) against our proposed approach, based exclusively on a split along the mayor axis.
@@ -117,6 +127,28 @@ The `scripts/` directory contains various executable files designed to test, val
 * `num_beams.py`: Runs a scaling benchmark evaluating reconstruction accuracy as the number of available TDLAS measurement beams increases.
 
 * `test_real_data.py`: Validates the proposed Gas Splatting method against real-world TDLAS experimental data.
+
+### GADEN scenarios and hyperparameter tuning
+
+Hyperparameters are tuned on the `tuning` set and the final values are checked on the `held_out` set, made of other houses:
+
+```bash
+python scripts/make_scenarios.py --vgr_dir ~/GADEN_files/scenarios   # once
+python scripts/benchmark.py --set tuning                              # current configuration
+
+# 1. Learning rates (current value x 1/4 ... x8)
+python scripts/sweep.py --params concentration_lr pos_lr scale_lr
+# 2. Densification and obstacle penalty
+python scripts/sweep.py --params gradient_threshold prune_threshold densify_interval densify_until
+python scripts/sweep.py --params injection_scale --values 0.1 0.25 0.5 1 2
+python scripts/sweep.py --params obstacle_lambda --values 0 0.025 0.05 0.1 0.2 0.4
+# 3. Stopping
+python scripts/sweep.py --params iterations early_stopping_patience early_stopping_min_delta
+
+python scripts/benchmark.py --set held_out                            # with the chosen values
+```
+
+After each stage, the chosen values are set in `config.py` (or passed on the command line) before sweeping the next one. Plots go to `plots/` and results to `results/`. Runs are parallel (`--workers`), so the times they report are only indicative; use `--workers 1` to measure them.
 
 ### Visualization
 

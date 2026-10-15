@@ -5,7 +5,7 @@ from typing import Any, Dict
 from config import Config
 from gs_model import GasSplattingModel
 from utils.sim_utils import MeasurementBatch
-from utils.densification_utils import extract_candidate_positions
+from utils.densification_utils import extract_candidate_positions, injection_scale
 from utils.gaussian_utils import estimate_concentration_scale
 
 @dataclass
@@ -21,9 +21,7 @@ def injection_initialization(batch: MeasurementBatch, cfg: Config):
     """
     Initializes Gaussians based on high-concentration beams using Continuous Spatial NMS.
     """
-    # Dynamic scale
-    map_w, map_h = cfg.env.map_size
-    init_std_val = min(map_w, map_h) * 0.1
+    init_std_val = injection_scale(cfg)
     
     final_pos = extract_candidate_positions(
         beams=batch.beams,

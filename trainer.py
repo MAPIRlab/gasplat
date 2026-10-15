@@ -10,7 +10,7 @@ from typing import List, Dict
 from config import Config
 from gs_model import GasSplattingModel
 from utils.sim_utils import EnvironmentContext, MeasurementBatch
-from utils.densification_utils import extract_candidate_positions
+from utils.densification_utils import extract_candidate_positions, injection_scale
 from utils.gaussian_utils import estimate_concentration_scale
 from utils.obstacle_utils import compute_esdf, compute_esdf_gradient, compute_aasdf
 
@@ -258,9 +258,7 @@ class Trainer:
         y_pred = self.last_prediction
         residuals = self.buffer_measurements - y_pred
 
-        # Dynamic scale
-        map_w, map_h = self.model.map_size[0].item(), self.model.map_size[1].item()
-        init_scale = min(map_w, map_h) * 0.1
+        init_scale = injection_scale(self.cfg)
 
         final_pos = extract_candidate_positions(
             beams=self.buffer_beams,

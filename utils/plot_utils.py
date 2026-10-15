@@ -295,3 +295,74 @@ def plot_experiment_evolution(x_values, x_label, methods_info, results_rmse, res
     print(f"[+] Experiment plot saved in: {save_path}")
     
     plt.close(fig) # Free memory
+
+def plot_scenario_grid(scenario_dirs: list[str], preds: dict, metrics: dict, save_path: str, title: str = ""):
+    """Ground truth (top) and reconstruction (bottom) of every scenario, on the same color scale."""
+    from utils.gaden_utils import load_scenario
+
+    n = len(scenario_dirs)
+    fig, axs = plt.subplots(2, n, figsize=(2.6 * n, 6.5), squeeze=False)
+    for j, d in enumerate(scenario_dirs):
+        name = os.path.basename(os.path.normpath(d))
+        sc = load_scenario(d)
+        h, w = sc.gas_map.shape
+        cs = sc.meta["cell_size"]
+        extent = (0, w * cs, 0, h * cs)
+        walls = np.ma.masked_where(~sc.obstacles, np.ones_like(sc.gas_map))
+        vmax = sc.gas_map[~sc.obstacles].max()
+        m = metrics[name]
+        for ax, img, label in [(axs[0, j], sc.gas_map, name.split("_h")[0]),
+                               (axs[1, j], preds[name], f"NRMSE {100 * m['nrmse']:.1f}%\npeak x{m['peak_ratio']:.2f}")]:
+            ax.imshow(np.ma.masked_where(sc.obstacles, img), origin='lower', extent=extent, cmap='viridis', vmin=0, vmax=vmax)
+            ax.imshow(walls, origin='lower', extent=extent, cmap='Greys', vmin=0, vmax=2.5, interpolation='nearest')
+            ax.set_title(label, fontsize=9)
+            ax.set_xticks([]); ax.set_yticks([])
+    axs[0, 0].set_ylabel("Ground truth")
+    axs[1, 0].set_ylabel("GASPLAT")
+    if title:
+        fig.suptitle(title)
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path)
+    plt.close(fig)
+    print(f"[+] Scenario grid saved in: {save_path}")
+
+
+def plot_sweep(param: str, values: list, runs: dict, default, save_path: str, baseline: dict | None = None):
+    """Metrics of a hyperparameter sweep: one thin line per scenario, the mean in bold.
+
+    runs maps (value, scenario) -> metrics dict. The current default value is
+    marked with a dotted line. When it is not a number (e.g. None), the mean of
+    the baseline runs (scenario -> metrics) is drawn as a dashed line instead.
+    """
+    scenarios = sorted({s for _, s in runs})
+    panels = [("nrmse", "NRMSE (% of peak)", 100), ("peak_ratio", "Peak ratio", 1),
+              ("mass_error", "Mass error (%)", 100), ("leak", "Gas inside obstacles (%)", 100),
+              ("gaussians", "Gaussians", 1), ("time", "Fit time (s)", 1)]
+    log_x = min(values) > 0 and max(values) / min(values) >= 8
+    colors = plt.cm.tab10(np.linspace(0, 1, 10))
+
+    fig, axs = plt.subplots(2, 3, figsize=(17, 9))
+    for ax, (key, label, factor) in zip(axs.ravel(), panels):
+        table = np.array([[runs[(v, s)][key] * factor for v in values] for s in scenarios])
+        for i, s in enumerate(scenarios):
+            ax.plot(values, table[i], color=colors[i % 10], lw=1, alpha=0.6, marker='.', label=s.split("_h")[0])
+        ax.plot(values, table.mean(axis=0), color='k', lw=2.5, marker='o', label="mean")
+        if key == "peak_ratio":
+            ax.axhline(1.0, color='gray', lw=1)
+        if baseline is not None:
+            ax.axhline(np.mean([baseline[s][key] * factor for s in scenarios]), color='k', ls='--', lw=1.5,
+                       label=f"current ({default})")
+        elif default is not None:
+            ax.axvline(default, color='gray', ls=':', lw=1.5)
+        if log_x:
+            ax.set_xscale('log')
+        ax.set_xlabel(param)
+        ax.set_ylabel(label)
+        ax.grid(True, which="both", ls="--", alpha=0.3)
+    axs[0, 0].legend(fontsize=8, ncol=2)
+    fig.suptitle(f"Sweep of {param} (current value: {default})")
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path)
+    plt.close(fig)
+    print(f"[+] Sweep plot saved in: {save_path}")

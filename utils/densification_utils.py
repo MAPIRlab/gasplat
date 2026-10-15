@@ -1,5 +1,15 @@
 import torch
 
+from config import Config
+
+
+def injection_scale(cfg: Config) -> float:
+    """Standard deviation of injected Gaussians, also the minimum spacing between them (m)."""
+    if cfg.densify.injection_scale is not None:
+        return cfg.densify.injection_scale
+    return min(cfg.env.map_size) * 0.1
+
+
 def extract_candidate_positions(
     beams: torch.Tensor,
     importance_scores: torch.Tensor,
