@@ -30,10 +30,10 @@ class SimulationParams:
 
 @dataclass
 class TrainParams:
-    pos_lr: float = 0.008 # Position learning rate
-    scale_lr: float = 0.003 # Scale learning rate
+    pos_lr: float = 0.01 # Position learning rate (meters per step)
+    scale_lr: float = 0.024 # Scale learning rate
     rotation_lr: float = 0.001 # Rotation learning rate
-    concentration_lr: float = 0.005 # Concentration learning rate
+    concentration_lr: float = 0.02 # Concentration learning rate
 
     iterations: int = 1500 # Max number of iterations
 
@@ -53,7 +53,7 @@ class TrainParams:
 
 @dataclass
 class DensificationParams:
-    gradient_threshold: float = 0.001 # Threshold for gradient-based densification
+    gradient_threshold: float = 0.004 # Densify Gaussians whose average position gradient of the data loss (per meter) exceeds this
     scale_threshold: float = 0.05 # Threshold used by original densification method. It decides whether the Gaussian should be splitted or cloned
     prune_threshold: float = 0.005 # Prune Gaussians below this concentration (relative to the concentration scale)
     injection_concentration: float = 0.01 # Concentration of injected Gaussians (relative to the concentration scale)

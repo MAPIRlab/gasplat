@@ -4,9 +4,6 @@ import torch
 def inverse_softplus(x):
     return torch.where(x > 20.0, x, torch.log(torch.expm1(x)))
 
-def inverse_sigmoid(x, norm_factor):
-    return torch.logit(x / norm_factor)
-
 def compute_integral(pos, cov_inv, concentration, beams):
     """
     Computes predicted projections, given gaussians' parameters and rays information.

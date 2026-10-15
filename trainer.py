@@ -243,6 +243,7 @@ class Trainer:
 
         self.update_learning_rates(iteration)
         self.optimizer.step()
+        self.model.project_positions()
 
         return total_loss
 

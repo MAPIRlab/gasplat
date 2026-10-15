@@ -6,7 +6,6 @@ import math
 from config import Config
 from utils.gaussian_utils import (
     compute_definite_integral,
-    inverse_sigmoid,
     inverse_softplus
 )
 
@@ -46,11 +45,11 @@ class GasSplattingModel(nn.Module):
         """
 
         with torch.no_grad():
-            # Positions: store as logit(normalized_pos) so get_pos() -> sigmoid(_pos)*map_size
+            # Positions: stored in meters
             if pos.shape != (self.num_gaussians, 2):
                 raise ValueError(f"pos must have shape ({self.num_gaussians}, 2), got {tuple(pos.shape)}")
 
-            self._pos.data.copy_(inverse_sigmoid(pos, self.map_size))
+            self._pos.data.copy_(self.clamp_to_map(pos))
 
             # Concentration: inverse of softplus
             if concentration.dim() == 0:
@@ -79,11 +78,20 @@ class GasSplattingModel(nn.Module):
 
     def get_pos(self):
         """
-        Computes the positions of the Gaussians in map coordinates.
-        Returns:
-            pos: Tensor of shape (K, 2) representing the positions of the Gaussians in map coordinates.
+        Positions of the Gaussians in map coordinates (meters), (K, 2). They are
+        optimized directly, so a step of the optimizer means the same distance
+        everywhere, whatever the size of the map.
         """
-        return torch.sigmoid(self._pos) * self.map_size
+        return self._pos
+
+    def clamp_to_map(self, pos: torch.Tensor) -> torch.Tensor:
+        """Projects positions (K, 2) onto the map [0, map_w] x [0, map_h]."""
+        return torch.minimum(torch.maximum(pos, torch.zeros_like(self.map_size)), self.map_size)
+
+    def project_positions(self):
+        """Keeps every center inside the map after an optimizer step."""
+        with torch.no_grad():
+            self._pos.data.copy_(self.clamp_to_map(self._pos.data))
 
     def get_scale(self):
         """
@@ -187,7 +195,7 @@ class GasSplattingModel(nn.Module):
         if N == 0: return
 
         # Initialize new parameters for the injected Gaussians
-        new_pos = inverse_sigmoid(pos, self.map_size)
+        new_pos = self.clamp_to_map(pos)
         new_scale = torch.log(torch.full((N, 2), scale, device=self._scale.device))
         new_concentration = inverse_softplus(torch.full((N,), concentration, device=self._concentration.device))
         new_rotation = torch.zeros(N, device=self._rotation.device)
@@ -371,9 +379,7 @@ class GasSplattingModel(nn.Module):
         new_pos = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + self.get_pos()[mask].repeat(N, 1)
 
         # Avoid invalid positions and transform to parameter's space
-        new_pos = torch.max(new_pos, torch.tensor(1e-5, device=new_pos.device))
-        new_pos = torch.min(new_pos, self.map_size - 1e-5)
-        new_pos = inverse_sigmoid(new_pos, self.map_size)
+        new_pos = self.clamp_to_map(new_pos)
 
         # Divide original concentration by N
         new_concentration = self._concentration_latent(
@@ -437,9 +443,7 @@ class GasSplattingModel(nn.Module):
             pos - shift_global
         ], dim=0)
         
-        new_pos = torch.max(new_pos, torch.tensor(1e-5, device=new_pos.device))
-        new_pos = torch.min(new_pos, self.map_size - 1e-5)
-        new_pos = inverse_sigmoid(new_pos, self.map_size)
+        new_pos = self.clamp_to_map(new_pos)
         
         # Mass Conservation (Scales). Minor scale stays untouched
         new_scales = scales.clone()
@@ -544,8 +548,8 @@ class GasSplattingModel(nn.Module):
 
     def update_accum_gradient(self):
         if self._pos.grad is not None:
-            adjusted_grads = self._pos.grad / self.map_size
-            grad_norm = torch.linalg.vector_norm(adjusted_grads, dim=-1, keepdim=True)
+            # Gradient with respect to the position in meters, independent of the map size
+            grad_norm = torch.linalg.vector_norm(self._pos.grad, dim=-1, keepdim=True)
             mask = grad_norm > 1e-6
 
             self.pos_grad_accum[mask] += grad_norm[mask]
