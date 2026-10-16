@@ -546,11 +546,38 @@ class GasSplattingModel(nn.Module):
 
         return {'splits': num_splits, 'clones': num_clones, 'prunes': num_prunes}
 
-    def update_accum_gradient(self):
+    def count_crossing_beams(self, beams: torch.Tensor, n_sigma: float = 3.0) -> torch.Tensor:
+        """
+        Number of beams that pass within n_sigma standard deviations (Mahalanobis
+        distance) of the center of each Gaussian, (K,). Beams farther away barely
+        see it: at 3 sigmas a beam collects about 1% of what a beam through the center does.
+        """
+        with torch.no_grad():
+            origin, direction = beams[:, 0, :], beams[:, 1, :] - beams[:, 0, :]   # (N, 2)
+            cov_inv = self.get_covariance_inverse()                                 # (K, 2, 2)
+            offset = origin[:, None, :] - self.get_pos()[None, :, :]                # (N, K, 2)
+            # Squared Mahalanobis distance along the beam, a*t^2 + b*t + c for t in [0, 1]
+            cov_inv_dir = torch.einsum('kij,nj->nki', cov_inv, direction)           # (N, K, 2)
+            a = (direction[:, None, :] * cov_inv_dir).sum(-1)
+            b = 2 * (offset * cov_inv_dir).sum(-1)
+            c = torch.einsum('nki,kij,nkj->nk', offset, cov_inv, offset)
+            t = (-b / (2 * a.clamp_min(1e-12))).clamp(0, 1)
+            return ((a * t**2 + b * t + c) <= n_sigma**2).sum(dim=0)
+
+    def update_accum_gradient(self, beams: torch.Tensor):
+        """
+        Accumulates the position gradient of the data loss for densification.
+        The loss averages over all the beams, but only those crossing a Gaussian
+        move it, so the gradient is rescaled to an average over those beams
+        (similar in spirit to 3DGS, which averages over the views in which a
+        Gaussian is visible). Otherwise it would also measure how small a share
+        of the beams sees each Gaussian.
+        """
         if self._pos.grad is not None:
-            # Gradient with respect to the position in meters, independent of the map size
-            grad_norm = torch.linalg.vector_norm(self._pos.grad, dim=-1, keepdim=True)
-            mask = grad_norm > 1e-6
+            crossing = self.count_crossing_beams(beams)
+            grad_norm = torch.linalg.vector_norm(self._pos.grad, dim=-1)
+            grad_norm = (grad_norm * beams.shape[0] / crossing.clamp_min(1)).unsqueeze(1)
+            mask = (crossing > 0).unsqueeze(1)
 
             self.pos_grad_accum[mask] += grad_norm[mask]
             self.denom[mask] += 1

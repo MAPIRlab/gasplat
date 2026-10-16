@@ -158,7 +158,14 @@ def run_scenario(cfg: Config) -> tuple[dict, np.ndarray]:
 def _run_scenario_task(task):
     key, cfg = task
     setup_worker_env()
-    metrics, pred = run_scenario(cfg)
+    try:
+        metrics, pred = run_scenario(cfg)
+    except torch.OutOfMemoryError:
+        # Runs that grow too many Gaussians for the GPU memory finish on the CPU
+        torch.cuda.empty_cache()
+        cfg.device_type = "cpu"
+        metrics, pred = run_scenario(cfg)
+    metrics["device"] = cfg.device_type
     return key, metrics, pred
 
 
@@ -166,11 +173,19 @@ def yield_scenario_runs(tasks: list[tuple], max_workers: int = 4):
     """Runs run_scenario for every (key, cfg) task in parallel processes and
     yields (key, metrics, pred) as they finish.
 
-    The processes are spawned rather than forked, so that each one can use CUDA.
-    With several workers the measured times are only indicative.
+    The processes are spawned rather than forked, so that each one can use CUDA,
+    and the runs are spread over all the available GPUs. A run that does not
+    fit in GPU memory is repeated on the CPU. With several workers the measured
+    times are only indicative.
     """
+    num_gpus = torch.cuda.device_count()
     context = multiprocessing.get_context("spawn")
     with ProcessPoolExecutor(max_workers=max_workers, mp_context=context) as executor:
-        futures = [executor.submit(_run_scenario_task, (key, copy.deepcopy(cfg))) for key, cfg in tasks]
+        futures = []
+        for i, (key, cfg) in enumerate(tasks):
+            cfg = copy.deepcopy(cfg)
+            if cfg.device_type == "cuda" and num_gpus > 1:
+                cfg.device_type = f"cuda:{i % num_gpus}"
+            futures.append(executor.submit(_run_scenario_task, (key, cfg)))
         for future in as_completed(futures):
             yield future.result()

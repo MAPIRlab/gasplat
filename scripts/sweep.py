@@ -12,10 +12,15 @@ value, and each parameter gets its own plot and results file.
 Parameters are given by name (concentration_lr) or with their group
 (train.concentration_lr). Any other configuration option can be overridden as
 in main.py, and is kept fixed during the sweep.
+
+Every finished run is appended to a progress file in results/, so running the
+same command again after an interruption only runs what is missing.
 """
 import os
 import sys
 import copy
+import json
+import hashlib
 import dataclasses
 import numpy as np
 from tqdm import tqdm
@@ -29,6 +34,7 @@ from utils.plot_utils import plot_sweep, set_publication_style
 from utils.experiment_utils import yield_scenario_runs, save_experiment_results
 
 GROUPS = ("env", "sim", "train", "densify")
+RESULTS_DIR = "results"
 
 
 def resolve_param(cfg: Config, name: str) -> tuple[str, str]:
@@ -54,6 +60,22 @@ def sweep_values(default, values: list[float] | None, factors: list[float]) -> l
     if isinstance(default, int) and not isinstance(default, bool):
         values = sorted({max(1, round(v)) for v in values})
     return values
+
+
+def progress_file(attr: str, set_name: str, cfg: Config) -> str:
+    """Progress file of a sweep, tied to its configuration and scenario set."""
+    key = json.dumps({"config": dataclasses.asdict(cfg), "set": set_name}, sort_keys=True, default=str)
+    return os.path.join(RESULTS_DIR, f"sweep_{attr}_{hashlib.sha1(key.encode()).hexdigest()[:10]}.partial.jsonl")
+
+
+def load_progress(path: str) -> dict:
+    runs = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                run = json.loads(line)
+                runs[(run["value"], run["scenario"])] = run["metrics"]
+    return runs
 
 
 def summarize(param: str, values: list, runs: dict, scenarios: list[str]):
@@ -99,19 +121,29 @@ def main():
         # Without a numeric current value, the current configuration is run as a reference
         run_baseline = not isinstance(default, (int, float)) or default not in values
 
+        progress = progress_file(attr, args.set, cfg)
+        runs = load_progress(progress)
+        if runs:
+            print(f"Resuming {group}.{attr}: {len(runs)} runs already done ({progress})")
+
         tasks = []
         for d, scenario in zip(dirs, scenarios):
             for v in values + (["current"] if run_baseline else []):
+                if (v, scenario) in runs:
+                    continue
                 task_cfg = copy.deepcopy(cfg)
                 task_cfg.sim.scenario = d
                 if v != "current":
                     setattr(getattr(task_cfg, group), attr, v)
                 tasks.append(((v, scenario), task_cfg))
 
-        runs = {}
-        for key, metrics, _ in tqdm(yield_scenario_runs(tasks, args.workers), total=len(tasks),
-                                    desc=f"Sweep {group}.{attr}"):
-            runs[key] = metrics
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+        with open(progress, "a") as f:
+            for key, metrics, _ in tqdm(yield_scenario_runs(tasks, args.workers), total=len(tasks),
+                                        desc=f"Sweep {group}.{attr}"):
+                runs[key] = metrics
+                f.write(json.dumps({"value": key[0], "scenario": key[1], "metrics": metrics}) + "\n")
+                f.flush()
 
         baseline = {s: runs.pop(("current", s)) for s in scenarios} if run_baseline else None
         summarize(f"{group}.{attr}", values, runs, scenarios)
@@ -128,6 +160,7 @@ def main():
         plot_sweep(f"{group}.{attr}", values, runs, default,
                    os.path.join(os.path.dirname(__file__), '..', 'plots', f'sweep_{attr}.png'),
                    baseline=baseline)
+        os.remove(progress)
 
 
 if __name__ == "__main__":

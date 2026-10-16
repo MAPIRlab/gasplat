@@ -53,7 +53,7 @@ class TrainParams:
 
 @dataclass
 class DensificationParams:
-    gradient_threshold: float = 0.004 # Densify Gaussians whose average position gradient of the data loss (per meter) exceeds this
+    gradient_threshold: float = 0.04 # Densify Gaussians whose position gradient (per meter), averaged over the beams that cross them, exceeds this
     scale_threshold: float = 0.05 # Threshold used by original densification method. It decides whether the Gaussian should be splitted or cloned
     prune_threshold: float = 0.005 # Prune Gaussians below this concentration (relative to the concentration scale)
     injection_concentration: float = 0.01 # Concentration of injected Gaussians (relative to the concentration scale)

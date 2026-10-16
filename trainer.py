@@ -173,7 +173,7 @@ class Trainer:
         # accumulator only reflects gradients coming from the measurements,
         # not the obstacle penalization below.
         data_loss.backward()
-        self.model.update_accum_gradient()
+        self.model.update_accum_gradient(self.buffer_beams)
 
         total_loss = data_loss.item()
 
