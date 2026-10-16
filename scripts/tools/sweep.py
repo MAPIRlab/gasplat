@@ -4,10 +4,12 @@ Every listed parameter is varied on its own, the rest keep their current
 value, and each parameter gets its own plot and results file.
 
     # Current value times each factor (default factors: 1/4, 1/2, 1, 2, 4, 8)
-    python scripts/sweep.py --params concentration_lr pos_lr scale_lr
+    python scripts/tools/sweep.py --params concentration_lr pos_lr scale_lr
     # Explicit values, for parameters without a numeric default or to include 0
-    python scripts/sweep.py --params injection_scale --values 0.1 0.25 0.5 1 2
-    python scripts/sweep.py --params obstacle_lambda --values 0 0.025 0.05 0.1 0.2 0.4
+    python scripts/tools/sweep.py --params injection_scale --values 0.1 0.25 0.5 1 2
+    python scripts/tools/sweep.py --params obstacle_lambda --values 0 0.025 0.05 0.1 0.2 0.4
+    # On procedural maps
+    python scripts/tools/sweep.py --params gradient_threshold --seeds 0 1 2
 
 Parameters are given by name (concentration_lr) or with their group
 (train.concentration_lr). Any other configuration option can be overridden as
@@ -26,10 +28,10 @@ import numpy as np
 from tqdm import tqdm
 from simple_parsing import ArgumentParser
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from config import Config
-from utils.scenario_sets import SETS, scenario_dirs
+from utils.scenario_sets import add_case_arguments, get_cases
 from utils.plot_utils import plot_sweep, set_publication_style
 from utils.experiment_utils import yield_scenario_runs, save_experiment_results
 
@@ -62,9 +64,9 @@ def sweep_values(default, values: list[float] | None, factors: list[float]) -> l
     return values
 
 
-def progress_file(attr: str, set_name: str, cfg: Config) -> str:
-    """Progress file of a sweep, tied to its configuration and scenario set."""
-    key = json.dumps({"config": dataclasses.asdict(cfg), "set": set_name}, sort_keys=True, default=str)
+def progress_file(attr: str, cases: list[str], cfg: Config) -> str:
+    """Progress file of a sweep, tied to its configuration and cases."""
+    key = json.dumps({"config": dataclasses.asdict(cfg), "cases": cases}, sort_keys=True, default=str)
     return os.path.join(RESULTS_DIR, f"sweep_{attr}_{hashlib.sha1(key.encode()).hexdigest()[:10]}.partial.jsonl")
 
 
@@ -95,7 +97,7 @@ def main():
                         help="Values to try (only with a single parameter)")
     parser.add_argument("--factors", nargs="+", type=float, default=[0.25, 0.5, 1, 2, 4, 8],
                         help="Multiples of the current value to try when --values is not given")
-    parser.add_argument("--set", default="tuning", choices=list(SETS), help="Scenario set to run")
+    add_case_arguments(parser)
     parser.add_argument("--workers", type=int, default=4, help="Runs in parallel")
     args = parser.parse_args()
     if args.values and len(args.params) > 1:
@@ -107,12 +109,8 @@ def main():
     cfg.train.live_vis = False
     set_publication_style()
 
-    dirs = scenario_dirs(args.set)
-    missing = [d for d in dirs if not os.path.exists(os.path.join(d, "scenario.npz"))]
-    if missing:
-        sys.exit(f"Missing scenarios: {', '.join(os.path.basename(d) for d in missing)}. "
-                 "Extract them with scripts/make_scenarios.py")
-    scenarios = [os.path.basename(d) for d in dirs]
+    cases = get_cases(args.set, args.seeds)
+    scenarios = [c.name for c in cases]
 
     for name in args.params:
         group, attr = resolve_param(cfg, name)
@@ -121,21 +119,20 @@ def main():
         # Without a numeric current value, the current configuration is run as a reference
         run_baseline = not isinstance(default, (int, float)) or default not in values
 
-        progress = progress_file(attr, args.set, cfg)
+        progress = progress_file(attr, scenarios, cfg)
         runs = load_progress(progress)
         if runs:
             print(f"Resuming {group}.{attr}: {len(runs)} runs already done ({progress})")
 
         tasks = []
-        for d, scenario in zip(dirs, scenarios):
+        for case in cases:
             for v in values + (["current"] if run_baseline else []):
-                if (v, scenario) in runs:
+                if (v, case.name) in runs:
                     continue
-                task_cfg = copy.deepcopy(cfg)
-                task_cfg.sim.scenario = d
+                task_cfg = case.apply(cfg)
                 if v != "current":
                     setattr(getattr(task_cfg, group), attr, v)
-                tasks.append(((v, scenario), task_cfg))
+                tasks.append(((v, case.name), task_cfg))
 
         os.makedirs(RESULTS_DIR, exist_ok=True)
         with open(progress, "a") as f:
@@ -153,12 +150,12 @@ def main():
 
         save_experiment_results(
             {"experiment_name": f"sweep_{attr}", "param": f"{group}.{attr}", "values": values,
-             "set": args.set, "config": dataclasses.asdict(cfg)},
+             "cases": scenarios, "config": dataclasses.asdict(cfg)},
             {"runs": [{"value": v, **runs[(v, s)]} for v in values for s in scenarios],
              "baseline": baseline},
         )
         plot_sweep(f"{group}.{attr}", values, runs, default,
-                   os.path.join(os.path.dirname(__file__), '..', 'plots', f'sweep_{attr}.png'),
+                   os.path.join(os.path.dirname(__file__), '..', '..', 'plots', f'sweep_{attr}.png'),
                    baseline=baseline)
         os.remove(progress)
 

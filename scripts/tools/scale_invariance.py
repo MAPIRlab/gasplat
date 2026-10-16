@@ -6,7 +6,15 @@ Concentrations are learned relative to a scale taken from the measurements,
 so any difference beyond float rounding means a hyperparameter or threshold
 has become absolute again.
 
-    python scripts/scale_invariance.py [--scenario DIR] [--factors 0.01 1 100]
+Training is chaotic over long runs: the L1 loss flips the sign of a beam's
+push when its residual crosses zero, and densification makes discrete split
+decisions, so float rounding alone ends up in a different set of Gaussians
+after many iterations, at any scale. The check therefore runs on the CPU,
+whose rounding is smallest, and only for a short run that includes the first
+densification step (--iterations, 200 by default); a scale dependence shows up
+there as a large difference, while rounding stays far below the tolerance.
+
+    python scripts/tools/scale_invariance.py [--scenario DIR] [--factors 0.01 1 100]
 
 Without --scenario, the first scenario of the tuning set and a procedural map
 are tested.
@@ -17,7 +25,7 @@ import copy
 import numpy as np
 from simple_parsing import ArgumentParser
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from config import Config
 from trainer import Trainer
@@ -26,8 +34,8 @@ from utils.scenario_sets import scenario_dirs
 from utils.experiment_utils import gas_map_metrics
 from utils.sim_utils import EnvironmentContext, GroundTruth, MeasurementBatch, generate_simulation_data
 
-MAP_TOLERANCE = 0.02     # max |map / factor - reference map|, relative to the true peak
-NRMSE_TOLERANCE = 0.005  # max NRMSE difference (absolute, 0.5 percentage points)
+MAP_TOLERANCE = 1e-3     # max |map / factor - reference map|, relative to the true peak
+NRMSE_TOLERANCE = 1e-4   # max NRMSE difference (absolute)
 
 
 def check(cfg: Config, factors: list[float], label: str) -> bool:
@@ -67,8 +75,10 @@ def main():
     cfg.quiet = True
     cfg.train.do_eval = False
     cfg.train.live_vis = False
-    # Float32 rounding differs between factors and shifts the iteration where early
-    # stopping triggers; a fixed number of iterations isolates the scale dependence
+    cfg.device_type = "cpu"
+    if "--iterations" not in sys.argv:
+        cfg.train.iterations = 200
+    # No early stopping: a fixed number of iterations for every factor
     cfg.train.early_stopping_patience = cfg.train.iterations
 
     cases = []

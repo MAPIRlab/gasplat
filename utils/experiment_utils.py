@@ -12,9 +12,10 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from config import Config
 from trainer import Trainer
 from utils.init_utils import setup_gs_model
-from utils.sim_utils import generate_simulation_data
+from utils.scenario_sets import case_name
+from utils.sim_utils import EnvironmentContext, MeasurementBatch, generate_simulation_data
 from methods.tomography import create_system_matrix_sparse
-from methods.registry import run_gas_splatting
+from methods.registry import AVAILABLE_METHODS
 
 def save_experiment_results(metadata, results, folder="results"):
     """
@@ -39,11 +40,15 @@ def save_experiment_results(metadata, results, folder="results"):
     print(f"[+] Experiment results saved in: {filepath}")
     return filepath
 
-def setup_worker_env():
-    """Prevents PyTorch/NumPy from crashing the CPU with too many internal threads."""
-    torch.set_num_threads(1)
-    os.environ["OMP_NUM_THREADS"] = "1"
-    os.environ["MKL_NUM_THREADS"] = "1"
+# Thread pools of the numerical libraries, read once when they are loaded
+THREAD_VARIABLES = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
+
+
+def setup_worker_env(threads: int = 1):
+    """Limits the PyTorch threads of a worker process. NumPy/SciPy read
+    THREAD_VARIABLES when they are imported, so yield_runs sets those before
+    starting the workers."""
+    torch.set_num_threads(threads)
 
 def rmse_loss(img_gt, img_pred):
     return np.sqrt(np.mean((img_pred - img_gt)**2))
@@ -59,47 +64,6 @@ def calculate_metrics(gt_img, res_img):
     ssim_val = ssim(gt_img, res_img, data_range=data_range)
     return rmse, ssim_val
 
-def warmup_worker(cfg, seed):
-    """Executes a tiny run to wake up JIT/PyTorch and prevent cold start penalties."""
-    warmup_cfg = copy.deepcopy(cfg)
-    warmup_res = 20
-    warmup_cfg.env.cell_size = warmup_cfg.env.map_size[0] / warmup_res
-    warmup_cfg.train.iterations = 5 
-    
-    warmup_batch, warmup_environment = generate_simulation_data(warmup_cfg)
-    _ = create_system_matrix_sparse(
-        (warmup_res, warmup_res), 
-        warmup_batch.beams.tolist(),
-        warmup_cfg.env.cell_size,
-        quiet=True
-    ).tocsr()
-
-    run_gas_splatting(batch=warmup_batch, cfg=warmup_cfg, environment=warmup_environment)
-
-def yield_parallel_experiment(worker_func, seeds, max_workers=4, **kwargs):
-    """
-    Agnostic parallel orchestrator that YIELDS results on the fly.
-    The worker_func must accept 'seed' as its first argument, followed by **kwargs.
-    """
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(worker_func, seed, **kwargs): seed 
-            for seed in seeds
-        }
-        
-        for future in as_completed(futures):
-            yield future.result()
-
-def merge_local_results(results, local_results):
-    """Merge per-seed local results into the shared experiment summary."""
-    for metric, metric_data in local_results.items():
-        for method, method_value in metric_data.items():
-            if isinstance(method_value, dict):
-                for x_value, value in method_value.items():
-                    results[metric][method][x_value].append(value)
-            else:
-                results[metric][method].append(method_value)
-
 # ==========================================
 #            SCENARIO EXPERIMENTS
 # ==========================================
@@ -111,6 +75,7 @@ def gas_map_metrics(gt: np.ndarray, pred: np.ndarray, obstacles: np.ndarray | No
     peak_ratio: reconstructed peak / true peak.
     mass_error: relative error of the total amount of gas.
     leak: fraction of the reconstructed gas that lies inside obstacles.
+    ssim: structural similarity of both maps with the obstacles set to zero.
     """
     free = np.ones(gt.shape, dtype=bool) if obstacles is None else ~(obstacles > 0.5)
     g, p = gt[free], pred[free]
@@ -122,14 +87,21 @@ def gas_map_metrics(gt: np.ndarray, pred: np.ndarray, obstacles: np.ndarray | No
         "peak_ratio": float(p.max()) / peak,
         "mass_error": float(p.sum() - g.sum()) / max(float(g.sum()), 1e-12),
         "leak": float(pred[~free].sum()) / max(float(pred.sum()), 1e-12),
+        "ssim": float(ssim(np.where(free, gt, 0.0), np.where(free, pred, 0.0), data_range=peak)),
     }
 
 
-def run_scenario(cfg: Config) -> tuple[dict, np.ndarray]:
-    """Simulates the measurements of cfg.sim.scenario, fits GASPLAT to them and evaluates it.
+def evaluation_maps(environment: EnvironmentContext, cfg: Config) -> dict:
+    """Ground truth, obstacles and extent of a case, to plot reconstructions next to it."""
+    return {"gt": environment.ground_truth.gas_map, "obstacles": environment.obstacles,
+            "extent": (0, cfg.env.map_size[0], 0, cfg.env.map_size[1])}
+
+
+def run_scenario(cfg: Config) -> tuple[dict, dict]:
+    """Simulates the measurements of a case, fits GASPLAT to them and evaluates it.
 
     Returns the metrics (see gas_map_metrics, plus model and run statistics)
-    and the reconstructed map at the cell size of the scenario.
+    and the maps (evaluation_maps plus the reconstruction "pred").
     """
     batch, environment = generate_simulation_data(cfg)
 
@@ -143,7 +115,7 @@ def run_scenario(cfg: Config) -> tuple[dict, np.ndarray]:
     pred = model.render_map(cell_size=cfg.env.cell_size)
     metrics = gas_map_metrics(environment.ground_truth.gas_map, pred, environment.obstacles)
     metrics.update({
-        "scenario": os.path.basename(os.path.normpath(cfg.sim.scenario)) if cfg.sim.scenario else None,
+        "scenario": case_name(cfg),
         "beams": int(batch.measurements.shape[0]),
         "poses": int(batch.pose_ids.max()) + 1 if batch.pose_ids is not None else None,
         "gaussians": model.num_gaussians,
@@ -152,40 +124,109 @@ def run_scenario(cfg: Config) -> tuple[dict, np.ndarray]:
         "concentration_scale": model.concentration_scale,
         "time": fit_time,
     })
-    return metrics, pred
+    return metrics, {**evaluation_maps(environment, cfg), "pred": pred}
 
 
-def _run_scenario_task(task):
-    key, cfg = task
-    setup_worker_env()
+def run_methods(batch: MeasurementBatch, environment: EnvironmentContext, cfg: Config,
+                methods: list[str]) -> tuple[dict, dict]:
+    """Reconstructs the same measurements with several methods (see methods/registry.py).
+
+    The system matrix of the grid methods is built once; its time is reported
+    on its own ("matrix_time"), and each method reports only its own solve or
+    fit time. Returns ({method: metrics}, {method: reconstruction}).
+    """
+    gt = environment.ground_truth.gas_map
+    system_matrix, matrix_time = None, None
+    if any(AVAILABLE_METHODS[m].get("needs_matrix") for m in methods):
+        t_start = time.time()
+        system_matrix = create_system_matrix_sparse(gt.shape, batch.beams.cpu().numpy(), cfg.env.cell_size)
+        matrix_time = time.time() - t_start
+
+    metrics, preds = {}, {}
+    for name in methods:
+        pred, solve_time = AVAILABLE_METHODS[name]["func"](batch=batch, cfg=cfg, environment=environment,
+                                                           system_matrix=system_matrix)
+        metrics[name] = {**gas_map_metrics(gt, pred, environment.obstacles), "time": solve_time,
+                         "matrix_time": matrix_time if AVAILABLE_METHODS[name].get("needs_matrix") else None}
+        preds[name] = pred
+    return metrics, preds
+
+
+# ==========================================
+#              PARALLEL RUNNER
+# ==========================================
+
+_warmed_up = False
+
+
+def _warm_up(cfg: Config):
+    """One short throwaway run of every method on the device of cfg, once per
+    process, so that CUDA initialization does not count in the first timed run."""
+    global _warmed_up
+    if _warmed_up:
+        return
+    warm_cfg = copy.deepcopy(cfg)
+    warm_cfg.sim.scenario, warm_cfg.sim.seed, warm_cfg.sim.num_beams = None, 0, 30
+    warm_cfg.env.map_size, warm_cfg.env.cell_size = (10.0, 10.0), 1.0
+    warm_cfg.train.iterations, warm_cfg.quiet = 20, True
+    batch, environment = generate_simulation_data(warm_cfg)
+    run_methods(batch, environment, warm_cfg, list(AVAILABLE_METHODS))
+    _warmed_up = True
+
+
+def _run_task(task):
+    func, key, cfg, kwargs, warmup, threads = task
+    setup_worker_env(threads)
+    if warmup:
+        _warm_up(cfg)
     try:
-        metrics, pred = run_scenario(cfg)
+        result = func(cfg, **kwargs)
     except torch.OutOfMemoryError:
         # Runs that grow too many Gaussians for the GPU memory finish on the CPU
         torch.cuda.empty_cache()
         cfg.device_type = "cpu"
-        metrics, pred = run_scenario(cfg)
-    metrics["device"] = cfg.device_type
-    return key, metrics, pred
+        result = func(cfg, **kwargs)
+    return key, result, cfg.device_type
+
+
+def yield_runs(func, tasks: list[tuple], max_workers: int = 4, warmup: bool = False):
+    """Runs func(cfg, **kwargs) for every (key, cfg) or (key, cfg, kwargs) task in
+    parallel processes and yields (key, result, device) as they finish.
+
+    func must be defined at module level. The processes are spawned rather than
+    forked, so that each one can use CUDA, and the runs are spread over all the
+    available GPUs. A run that does not fit in GPU memory is repeated on the
+    CPU. The CPU cores are shared out among the workers, so that their thread
+    pools do not oversubscribe the machine. With several workers the measured
+    times are only indicative; with warmup, every process makes a throwaway
+    run before its first timed one.
+    """
+    num_gpus = torch.cuda.device_count()
+    threads = max(1, (os.cpu_count() or 1) // max_workers)
+    saved = {v: os.environ.get(v) for v in THREAD_VARIABLES}
+    os.environ.update({v: str(threads) for v in THREAD_VARIABLES})  # inherited by the spawned workers
+    try:
+        context = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=max_workers, mp_context=context) as executor:
+            futures = []
+            for i, task in enumerate(tasks):
+                key, cfg, kwargs = task if len(task) == 3 else (*task, {})
+                cfg = copy.deepcopy(cfg)
+                if cfg.device_type == "cuda" and num_gpus > 1:
+                    cfg.device_type = f"cuda:{i % num_gpus}"
+                futures.append(executor.submit(_run_task, (func, key, cfg, kwargs, warmup, threads)))
+            for future in as_completed(futures):
+                yield future.result()
+    finally:
+        for v, value in saved.items():
+            if value is None:
+                os.environ.pop(v, None)
+            else:
+                os.environ[v] = value
 
 
 def yield_scenario_runs(tasks: list[tuple], max_workers: int = 4):
-    """Runs run_scenario for every (key, cfg) task in parallel processes and
-    yields (key, metrics, pred) as they finish.
-
-    The processes are spawned rather than forked, so that each one can use CUDA,
-    and the runs are spread over all the available GPUs. A run that does not
-    fit in GPU memory is repeated on the CPU. With several workers the measured
-    times are only indicative.
-    """
-    num_gpus = torch.cuda.device_count()
-    context = multiprocessing.get_context("spawn")
-    with ProcessPoolExecutor(max_workers=max_workers, mp_context=context) as executor:
-        futures = []
-        for i, (key, cfg) in enumerate(tasks):
-            cfg = copy.deepcopy(cfg)
-            if cfg.device_type == "cuda" and num_gpus > 1:
-                cfg.device_type = f"cuda:{i % num_gpus}"
-            futures.append(executor.submit(_run_scenario_task, (key, cfg)))
-        for future in as_completed(futures):
-            yield future.result()
+    """yield_runs of run_scenario: yields (key, metrics, maps), with the device in the metrics."""
+    for key, (metrics, maps), device in yield_runs(run_scenario, tasks, max_workers):
+        metrics["device"] = device
+        yield key, metrics, maps

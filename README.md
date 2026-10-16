@@ -40,7 +40,7 @@ To evaluate the effectiveness of **Gas Splatting**, it is compared against tradi
 gas_splatting/
 ├── methods/            # Reconstruction method registry and runners
 ├── real_data/          # Real-world TDLAS sweep datasets (JSON)
-├── scripts/            # Benchmarks, experiments, and plotting scripts
+├── scripts/            # experiments/ (paper comparisons), figures/ (method figures), tools/ (tuning and checks)
 ├── utils/              # Simulation, geometry, initialization, and math utilities
 ├── visualization/      # Visualization components and interactive tools
 ├── config.py           # simple_parsing configuration definitions
@@ -98,57 +98,63 @@ python main.py
 
 This will generate simulation data (ground truth, beam geometry, and measurements), initialize model parameters, and start training.
 
-### Experimental & Benchmarking Scripts
+### Experiments, figures and tools
 
-The `scripts/` directory contains various executable files designed to test, validate, and compare different aspects of the method:
+Every script runs on a set of cases: GADEN scenarios (`--set tuning`, `held_out`, `all`, listed in `utils/scenario_sets.py`) or procedural maps (`--set procedural`, or `--seeds 0 1 2`). Any configuration option can be overridden on the command line. Plots go to `plots/` and results to `results/`.
 
-* `make_scenarios.py`: Extracts the GADEN scenarios of the tuning and held-out sets (listed in `utils/scenario_sets.py`) from the VGR house archives into `data/scenarios`.
+`scripts/experiments/` produces the comparisons for the paper:
 
-* `benchmark.py`: Runs Gas Splatting on a scenario set and reports, for every scenario, the normalized RMSE, recovered peak, mass error, gas inside obstacles, Gaussians and time, with a ground truth vs. reconstruction grid. Run it after any change to check that nothing got worse.
+* `compare_methods.py`: Reconstructs the same measurements with Gas Splatting and the grid-based baselines (SART, RBF-SART, LFD, LTD), and reports reconstruction error and time per case. The system matrix of the grid methods is timed apart from their solves, and runs are warmed up so that times are comparable.
 
-* `sweep.py`: One-at-a-time hyperparameter sweep on a scenario set. Each parameter is varied on its own and gets a plot of every metric against its value.
+* `num_measurements.py`: Reconstruction error of every method as measurements are added, pose by pose on GADEN scenarios (beam by beam on procedural maps). Meant for a simple environment, where the effect is easiest to see.
+
+`scripts/figures/` produces the figures of the method:
+
+* `injection_figure.py`: The Gaussian injection mechanism, step by step.
+
+* `far_field_gradient.py`: Primitives far from unexplained gas receive no gradient, which motivates the injection.
+
+* `densification_training.py`: Loss and error during training with the 3DGS densification and with the mass-conserving long-axis split, showing the loss spikes each one causes, and both reconstructions.
+
+* `split_c_factor.py`: Error of the long-axis split as the children are placed farther from the parent center (the offset of half the major scale).
+
+`scripts/tools/` holds tuning, checks and quick tests:
+
+* `make_scenarios.py`: Extracts the GADEN scenarios of the tuning and held-out sets from the VGR house archives into `data/scenarios`.
+
+* `benchmark.py`: Runs Gas Splatting on a set and reports, for every case, the normalized RMSE, recovered peak, mass error, gas inside obstacles, Gaussians and time, with a ground truth vs. reconstruction grid. Run it after any change to check that nothing got worse. Ablations are a single run each, e.g. `--original_dens` for the 3DGS densification.
+
+* `sweep.py`: One-at-a-time hyperparameter sweep. Each parameter is varied on its own and gets a plot of every metric against its value. Progress is saved as runs finish, so an interrupted sweep resumes by running the same command again.
 
 * `scale_invariance.py`: Checks that the reconstruction does not depend on the absolute concentration level, by repeating a run with the measurements multiplied by several factors.
 
 * `noise_first.py`: Incremental run whose first batches only measure noise, checking that the concentration scale is raised when the gas is found.
 
-* `compare_methods.py`: Compares Gas Splatting against state-of-the-art baselines. This script generates the visual reconstruction comparison grid shown in the performance section above.
+* `test_obstacles.py`: Toy obstacle layouts on procedural maps, for quick checks of the obstacle penalty.
 
-* `densification_benchmark.py`: Runs benchmarks across multiple random seeds to compare the performance of a 3DGS-inspired adaptive densification strategy (split + clone) against our proposed approach, based exclusively on a split along the mayor axis.
-
-* `densification_training.py`: Compares both densification strategies using a single seed, rendering the resulting gas maps alongside their loss functions and RMSE evolution plots.
-
-* `split_c_factor.py`: Generates an error-evolution graph evaluating the impact of the splitting factor parameter (c) within our custom densification strategy.
-
-* `fractal_distribution.py`: A standalone script to generate gas distribution maps using the same fractal algorithm used in simulation ground truths. Great for experimenting with different map sizes, grid resolutions, and random seeds.
-
-* `grid_resolution.py`: Performs an scaling experiment evaluating how Gas Splatting holds up against baseline methods as the grid cell resolution increases.
-
-* `num_beams.py`: Runs a scaling benchmark evaluating reconstruction accuracy as the number of available TDLAS measurement beams increases.
-
-* `test_real_data.py`: Validates the proposed Gas Splatting method against real-world TDLAS experimental data.
+* `test_real_data.py`: Runs Gas Splatting on the real TDLAS sweeps in `real_data/`.
 
 ### GADEN scenarios and hyperparameter tuning
 
 Hyperparameters are tuned on the `tuning` set and the final values are checked on the `held_out` set, made of other houses:
 
 ```bash
-python scripts/make_scenarios.py --vgr_dir ~/GADEN_files/scenarios   # once
-python scripts/benchmark.py --set tuning                              # current configuration
+python scripts/tools/make_scenarios.py --vgr_dir ~/GADEN_files/scenarios   # once
+python scripts/tools/benchmark.py --set tuning                              # current configuration
 
 # 1. Learning rates (current value x 1/4 ... x8)
-python scripts/sweep.py --params concentration_lr pos_lr scale_lr
+python scripts/tools/sweep.py --params concentration_lr pos_lr scale_lr
 # 2. Densification and obstacle penalty
-python scripts/sweep.py --params gradient_threshold prune_threshold densify_interval densify_until
-python scripts/sweep.py --params injection_scale --values 0.1 0.25 0.5 1 2
-python scripts/sweep.py --params obstacle_lambda --values 0 0.025 0.05 0.1 0.2 0.4
+python scripts/tools/sweep.py --params gradient_threshold --values 0.01 0.02 0.04 0.08 0.16
+python scripts/tools/sweep.py --params injection_scale --values 0.1 0.25 0.5 1 2
+python scripts/tools/sweep.py --params obstacle_lambda --values 0 0.025 0.05 0.1 0.2 0.4
 # 3. Stopping
-python scripts/sweep.py --params iterations early_stopping_patience early_stopping_min_delta
+python scripts/tools/sweep.py --params iterations early_stopping_patience early_stopping_min_delta
 
-python scripts/benchmark.py --set held_out                            # with the chosen values
+python scripts/tools/benchmark.py --set held_out                            # with the chosen values
 ```
 
-After each stage, the chosen values are set in `config.py` (or passed on the command line) before sweeping the next one. Plots go to `plots/` and results to `results/`. Runs are parallel (`--workers`), so the times they report are only indicative; use `--workers 1` to measure them.
+After each stage, the chosen values are set in `config.py` (or passed on the command line) before sweeping the next one. Runs are parallel (`--workers`), so the times they report are only indicative; use `--workers 1` to measure them.
 
 ### Visualization
 
@@ -180,10 +186,10 @@ Run a custom simulation with 50 beams and a maximum of 2000 training iterations:
 python main.py --num_beams 50 --iterations 2000
 ```
 
-Evaluate grid resolution performance across 20 random seeds using a 0.5m cell size:
+Compare Gas Splatting with the baselines on three procedural maps, with 100 beams each:
 
 ```bash
-python scripts/grid_resolution.py --num_seeds 20 --cell_size 0.5
+python scripts/experiments/compare_methods.py --seeds 0 1 2 --num_beams 100
 ```
 
 Train the model using custom learning rates and enable real-time visualization:
@@ -192,7 +198,7 @@ Train the model using custom learning rates and enable real-time visualization:
 python main.py --pos_lr 0.005 --concentration_lr 0.002 --live_vis
 ```
 
-> ⚠️ Important Note: Because configuration classes are shared across the entire project, some CLI options might not be applicable or will have no effect depending on the specific script you are executing. For example, changing the seed will not affect experiment scripts desinged to test different seeds.
+> ⚠️ Important Note: Because configuration classes are shared across the entire project, some CLI options might not be applicable or will have no effect depending on the specific script you are executing. For example, `--seed` has no effect on scripts given `--seeds`, which set the seed of each procedural map.
 
 </details>
 

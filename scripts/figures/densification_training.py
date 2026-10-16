@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from simple_parsing import ArgumentParser
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from config import Config
 from trainer import Trainer
@@ -83,7 +83,7 @@ def main():
     # Shared colorbar
     fig1.colorbar(im_gt, ax=axes1.tolist(), label="ppm", fraction=0.015, pad=0.04)
     
-    save_path_recon = os.path.join(os.path.dirname(__file__), '..', 'plots', 'densification_recon.png')
+    save_path_recon = os.path.join(os.path.dirname(__file__), '..', '..', 'plots', 'densification_recon.png')
     os.makedirs(os.path.dirname(save_path_recon), exist_ok=True)
     fig1.savefig(save_path_recon)
     plt.close(fig1)
@@ -132,7 +132,7 @@ def main():
     plt.tight_layout()
 
     # Save and show
-    save_path = os.path.join(os.path.dirname(__file__), '..', 'plots', 'densification_curves.png')
+    save_path = os.path.join(os.path.dirname(__file__), '..', '..', 'plots', 'densification_curves.png')
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path)
     print(f"[+] Training evolution plot saved in: {save_path}")

@@ -2,14 +2,14 @@
 Extracts the scenario packages of the tuning and held-out sets (see
 utils/scenario_sets.py) from the VGR house archives into data/scenarios.
 
-    python scripts/make_scenarios.py --vgr_dir ~/GADEN_files/scenarios [--set all]
+    python scripts/tools/make_scenarios.py --vgr_dir ~/GADEN_files/scenarios [--set all]
 """
 import os
 import sys
 import argparse
 from concurrent.futures import ProcessPoolExecutor
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from utils.gaden_utils import DEFAULT_ROOT, extract_scenario
 from utils.scenario_sets import HEIGHT, ITERATION, SETS, scenario_dirs
@@ -25,7 +25,7 @@ def main():
     parser = argparse.ArgumentParser(description="Extract the scenario sets from the VGR dataset.")
     parser.add_argument("--vgr_dir", default=os.path.expanduser("~/GADEN_files/scenarios"),
                         help="Directory with the HouseNN.zip archives")
-    parser.add_argument("--set", default="all", choices=SETS.keys())
+    parser.add_argument("--set", default="all", choices=["tuning", "held_out", "all"])
     parser.add_argument("--root", default=DEFAULT_ROOT, help="Where to write the scenario packages")
     parser.add_argument("--overwrite", action="store_true", help="Extract again scenarios that already exist")
     parser.add_argument("--workers", type=int, default=8)

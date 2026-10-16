@@ -11,7 +11,7 @@ Three runs on the same measurements are compared:
 Raising the scale should end close to the reference, while a fixed scale
 leaves every relative threshold off by the ratio between noise and gas.
 
-    python scripts/noise_first.py [--scenario DIR] [--num_batches 5] [--noise_floor 2.0]
+    python scripts/tools/noise_first.py [--scenario DIR] [--num_batches 5] [--noise_floor 2.0]
 
 Without --scenario, the first scenario of the tuning set is used. Noise is
 always added (absolute noise_floor plus the relative snr_db).
@@ -25,7 +25,7 @@ import torch
 import matplotlib.pyplot as plt
 from simple_parsing import ArgumentParser
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from config import Config
 from trainer import Trainer
@@ -117,7 +117,7 @@ def main():
     axs[0].legend(fontsize=10)
     fig.suptitle(f"Noise-first incremental run on {name.split('_h')[0]}")
     fig.tight_layout()
-    save_path = os.path.join(os.path.dirname(__file__), '..', 'plots', 'noise_first.png')
+    save_path = os.path.join(os.path.dirname(__file__), '..', '..', 'plots', 'noise_first.png')
     fig.savefig(save_path)
     plt.close(fig)
     print(f"[+] Plot saved in: {save_path}")

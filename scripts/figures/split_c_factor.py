@@ -4,7 +4,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from utils.plot_utils import set_publication_style
 
@@ -112,7 +112,7 @@ def main():
     plt.tight_layout(pad=2.0)
     
     # Save logic
-    save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'plots', 'long_axis_optimization.png')
+    save_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'plots', 'long_axis_optimization.png')
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     
     # Using a higher DPI ensures crispness when printing the LaTeX PDF

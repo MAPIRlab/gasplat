@@ -215,116 +215,36 @@ def plot_training_results(gaussians: GasSplattingModel, batch: MeasurementBatch,
     
     plt.close(fig) # Free memory
 
-def plot_experiment_evolution(x_values, x_label, methods_info, results_rmse, results_ssim, results_time, save_path):
+def plot_reconstruction_grid(cases: list[str], maps: dict, rows: dict, titles: dict, save_path: str, title: str = ""):
+    """Ground truth (top row) and one row per method, one column per case.
+
+    maps[case] holds "gt", "obstacles" (or None) and "extent"; rows maps a method
+    name to {case: reconstruction}; titles maps (method, case) to a subplot title.
+    Every column shares the color scale of its ground truth.
     """
-    Generates a generic 1x3 plot (RMSE, SSIM, Time) for any experiment and saves it.
-    """
-    plt.rcParams.update({'font.size': 12})
-    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 6))
-
-    for method in methods_info.keys():
-        style = methods_info[method]["style"]
-        
-        # Means and std
-        rmse_means = [np.mean(results_rmse[method][x]) for x in x_values]
-        rmse_stds  = [np.std(results_rmse[method][x]) for x in x_values]
-        
-        ssim_means = [np.mean(results_ssim[method][x]) for x in x_values]
-        ssim_stds  = [np.std(results_ssim[method][x]) for x in x_values]
-        
-        time_means = [np.mean(results_time[method][x]) for x in x_values]
-        time_stds  = [np.std(results_time[method][x]) for x in x_values]
-
-        # --- RMSE ---
-        ax1.plot(x_values, rmse_means, label=method, 
-                 color=style["color"], marker=style["marker"], 
-                 linewidth=style.get("linewidth", 1.5), 
-                 markersize=style.get("markersize", 6))
-        ax1.fill_between(x_values, 
-                         np.array(rmse_means) - np.array(rmse_stds), 
-                         np.array(rmse_means) + np.array(rmse_stds), 
-                         color=style["color"], alpha=0.15)
-
-        # --- SSIM ---
-        ax2.plot(x_values, ssim_means, label=method, 
-                 color=style["color"], marker=style["marker"], 
-                 linewidth=style.get("linewidth", 1.5), 
-                 markersize=style.get("markersize", 6))
-        ax2.fill_between(x_values, 
-                         np.array(ssim_means) - np.array(ssim_stds), 
-                         np.array(ssim_means) + np.array(ssim_stds), 
-                         color=style["color"], alpha=0.15)
-
-        # --- Time ---
-        ax3.plot(x_values, time_means, label=method, 
-                 color=style["color"], marker=style["marker"], 
-                 linewidth=style.get("linewidth", 1.5), 
-                 markersize=style.get("markersize", 6))
-        ax3.fill_between(x_values, 
-                         np.array(time_means) - np.array(time_stds), 
-                         np.array(time_means) + np.array(time_stds), 
-                         color=style["color"], alpha=0.15)
-
-    # --- Plot details ---
-    ax1.set_title("RMSE Evolution", pad=15)
-    ax1.set_xlabel(x_label)
-    ax1.set_ylabel("RMSE (ppm)")
-    ax1.set_xticks(x_values)
-    ax1.grid(True, linestyle='--', alpha=0.7)
-    ax1.legend()
-
-    ax2.set_title("SSIM Evolution", pad=15)
-    ax2.set_xlabel(x_label)
-    ax2.set_ylabel("SSIM")
-    ax2.set_xticks(x_values)
-    ax2.grid(True, linestyle='--', alpha=0.7)
-    ax2.legend()
-
-    ax3.set_title("Time Evolution", pad=15)
-    ax3.set_xlabel(x_label)
-    ax3.set_ylabel("Total Time (seconds)")
-    ax3.set_xticks(x_values)
-    ax3.grid(True, linestyle='--', alpha=0.7)
-    ax3.legend()
-
-    plt.tight_layout()
-    
-    # Save plot
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    plt.savefig(save_path)
-    print(f"[+] Experiment plot saved in: {save_path}")
-    
-    plt.close(fig) # Free memory
-
-def plot_scenario_grid(scenario_dirs: list[str], preds: dict, metrics: dict, save_path: str, title: str = ""):
-    """Ground truth (top) and reconstruction (bottom) of every scenario, on the same color scale."""
-    from utils.gaden_utils import load_scenario
-
-    n = len(scenario_dirs)
-    fig, axs = plt.subplots(2, n, figsize=(2.6 * n, 6.5), squeeze=False)
-    for j, d in enumerate(scenario_dirs):
-        name = os.path.basename(os.path.normpath(d))
-        sc = load_scenario(d)
-        h, w = sc.gas_map.shape
-        cs = sc.meta["cell_size"]
-        extent = (0, w * cs, 0, h * cs)
-        walls = np.ma.masked_where(~sc.obstacles, np.ones_like(sc.gas_map))
-        vmax = sc.gas_map[~sc.obstacles].max()
-        m = metrics[name]
-        for ax, img, label in [(axs[0, j], sc.gas_map, name.split("_h")[0]),
-                               (axs[1, j], preds[name], f"NRMSE {100 * m['nrmse']:.1f}%\npeak x{m['peak_ratio']:.2f}")]:
-            ax.imshow(np.ma.masked_where(sc.obstacles, img), origin='lower', extent=extent, cmap='viridis', vmin=0, vmax=vmax)
-            ax.imshow(walls, origin='lower', extent=extent, cmap='Greys', vmin=0, vmax=2.5, interpolation='nearest')
+    n_rows, n_cols = len(rows) + 1, len(cases)
+    fig, axs = plt.subplots(n_rows, n_cols, figsize=(2.6 * n_cols, 3.0 * n_rows + 0.5), squeeze=False)
+    for j, case in enumerate(cases):
+        m = maps[case]
+        free = np.ones(m["gt"].shape, dtype=bool) if m["obstacles"] is None else ~(m["obstacles"] > 0.5)
+        vmax = m["gt"][free].max()
+        walls = np.ma.masked_where(free, np.ones_like(m["gt"]))
+        panels = [("Ground truth", m["gt"], case.split("_h")[0])] + \
+                 [(method, preds[case], titles.get((method, case), "")) for method, preds in rows.items()]
+        for i, (row_label, img, label) in enumerate(panels):
+            ax = axs[i, j]
+            ax.imshow(np.ma.masked_where(~free, img), origin='lower', extent=m["extent"], cmap='viridis', vmin=0, vmax=vmax)
+            ax.imshow(walls, origin='lower', extent=m["extent"], cmap='Greys', vmin=0, vmax=2.5, interpolation='nearest')
             ax.set_title(label, fontsize=9)
             ax.set_xticks([]); ax.set_yticks([])
-    axs[0, 0].set_ylabel("Ground truth")
-    axs[1, 0].set_ylabel("GASPLAT")
+            if j == 0:
+                ax.set_ylabel(row_label)
     if title:
         fig.suptitle(title)
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     fig.savefig(save_path)
     plt.close(fig)
-    print(f"[+] Scenario grid saved in: {save_path}")
+    print(f"[+] Reconstruction grid saved in: {save_path}")
 
 
 def plot_sweep(param: str, values: list, runs: dict, default, save_path: str, baseline: dict | None = None):

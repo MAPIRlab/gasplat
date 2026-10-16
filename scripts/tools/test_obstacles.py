@@ -10,7 +10,7 @@ import torch
 from scipy.ndimage import binary_dilation
 from simple_parsing import ArgumentParser
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from config import Config
 from trainer import Trainer
@@ -212,7 +212,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     cfg: Config = args.cfg
-    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
     seed = cfg.sim.seed
     if seed is not None:

@@ -82,7 +82,3 @@ class Config:
             print("Warning: CUDA requested but not available. Using CPU.")
             return torch.device("cpu")
         return torch.device(self.device_type)
-
-@dataclass
-class ExperimentConfig(Config):
-    num_seeds: int = 30 # Number of random seeds for the experiment

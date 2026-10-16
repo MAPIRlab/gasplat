@@ -22,7 +22,7 @@ from matplotlib.patches import Circle
 from matplotlib.lines import Line2D
 from shapely.geometry import LineString, Point
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from config import Config, EnvironmentParams, SimulationParams, TrainParams, DensificationParams
 from trainer import Trainer
@@ -31,10 +31,13 @@ from utils.densification_utils import extract_candidate_positions
 from utils.obstacle_utils import add_rectangle, obstacle_mask_to_geometry
 from utils.sim_utils import MeasurementBatch, EnvironmentContext, GroundTruth, simulate_gas_integrals
 
+# Computer Modern, the default LaTeX font, shipped with matplotlib so no TeX install is needed
 plt.rcParams.update({
     "font.family": "serif",
-    "font.serif": ["TeX Gyre Termes", "Times New Roman", "DejaVu Serif"],
-    "mathtext.fontset": "stix",
+    "font.serif": ["cmr10"],
+    "mathtext.fontset": "cm",
+    "axes.formatter.use_mathtext": True,
+    "axes.unicode_minus": False,
     "font.size": 7.5,
     "axes.titlesize": 8,
 })
@@ -295,13 +298,13 @@ def main():
     ax[0].add_collection(LineCollection(beams_np[n_first:], colors=C_NEW, lw=0.45, zorder=3))
     model_coverage(ax[0], model, level)
     # (b) The gate: a residual is only actionable where the model holds nothing
-    base(ax[1], gas, obstacles, "(b) Admitted: $y_n-\\hat{y}_n > \\hat{y}_n$", emitters)
+    base(ax[1], gas, obstacles, "(b) Candidate beam filtering", emitters)
     ax[1].add_collection(LineCollection(beams_np[~admitted], colors=C_OFF, lw=0.35, zorder=2))
     ax[1].add_collection(LineCollection(beams_np[admitted], colors=C_CAND, lw=0.5, zorder=3))
     model_coverage(ax[1], model, level)
 
     # (c) The admitted beams ranked by the gas each one misses
-    base(ax[2], gas, obstacles, "(c) Normalized residual $(y_n-\\hat{y}_n)/l_n$", emitters)
+    base(ax[2], gas, obstacles, "(c) Path-averaged residual scoring", emitters)
     ax[2].add_collection(LineCollection(beams_np[~admitted], colors=C_OFF, lw=0.35, zorder=2))
     norm = Normalize(0, max(score[admitted].max(), 1e-6))
     ax[2].add_collection(LineCollection(beams_np[admitted],
@@ -309,12 +312,12 @@ def main():
                                         lw=0.55, zorder=3))
 
     # (d) Statistical filter among the admitted beams
-    base(ax[3], gas, obstacles, "(d) Candidates: above mean $+$ std", emitters)
+    base(ax[3], gas, obstacles, "(d) High-residual selection", emitters)
     ax[3].add_collection(LineCollection(beams_np[~candidate], colors=C_OFF, lw=0.35, zorder=2))
     ax[3].add_collection(LineCollection(beams_np[candidate], colors=C_CAND, lw=0.55, zorder=3))
 
     # (e) Intersections, scored, against the region existing primitives already cover
-    base(ax[4], gas, obstacles, "(e) Intersections and proximity filter", emitters)
+    base(ax[4], gas, obstacles, "(e) Beam intersection", emitters)
     ax[4].add_collection(LineCollection(beams_np[candidate], colors="#f2b6b6", lw=0.35, zorder=2))
     exclusion_zone(ax[4], existing.cpu().numpy(), min_dist)
     ax[4].scatter(pts[~near, 0], pts[~near, 1], s=6, c=st["point_score"].numpy()[~near],
@@ -323,7 +326,7 @@ def main():
     model_coverage(ax[4], model, level)
 
     # (f) Non-maximum suppression, and the primitives it produces
-    base(ax[5], gas, obstacles, "(f) After NMS: injected primitives", emitters)
+    base(ax[5], gas, obstacles, "(f) Injection", emitters)
     for i in kept:
         ax[5].add_patch(Circle(pts[i], 2 * min_dist, fill=False, edgecolor=C_NEW,
                                lw=0.6, ls=(0, (2, 1.5)), zorder=4))
@@ -338,7 +341,7 @@ def main():
         Line2D([], [], color=C_CAND, lw=1.0, label="selected beams"),
         Line2D([], [], color="k", marker="s", ls="", ms=2.6, label="emitter"),
     ], loc="outside lower center", ncol=6, frameon=False, handlelength=1.3,
-        handletextpad=0.5, columnspacing=1.3, fontsize=6.5)
+        handletextpad=0.5, columnspacing=1.3, fontsize=7.5)
 
     os.makedirs("plots", exist_ok=True)
     fig.savefig("plots/injection_steps.pdf", bbox_inches="tight")

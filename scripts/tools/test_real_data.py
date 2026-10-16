@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from simple_parsing import ArgumentParser
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from config import Config
 from trainer import Trainer
@@ -83,7 +83,7 @@ def main():
     if not cfg.quiet: print(f"Using device: {cfg.device}")
     
     # Load data
-    data_path = os.path.join(os.path.dirname(__file__), '..', 'real_data', 'full_sweep.json') 
+    data_path = os.path.join(os.path.dirname(__file__), '..', '..', 'real_data', 'full_sweep.json') 
     batch, environment = build_custom_real_scenario(
         cfg=cfg,
         real_data_path=data_path,
@@ -123,7 +123,7 @@ def main():
     # ------------------------------------------------
 
     # Plot results
-    save_path = os.path.join(os.path.dirname(__file__), '..', 'plots', 'real_data_results.png')
+    save_path = os.path.join(os.path.dirname(__file__), '..', '..', 'plots', 'real_data_results.png')
     plot_real_results(model, batch, results, cfg, save_path)
 
 if __name__ == "__main__":
