@@ -40,7 +40,7 @@ class TrainParams:
     scale_update_factor: float = 2.0 # Raise the concentration scale when a batch exceeds it by this factor
 
     obstacle_lambda: float = 0.1 # Weight for the obstacle penalty term in the loss function
-    obstacle_sigma_k: float = 2.0 # Margin kept between a Gaussian and an obstacle, in standard deviations along the evaluated direction
+    obstacle_sigma_k: float = 1.0 # Margin kept between a Gaussian and an obstacle, in standard deviations along the evaluated direction
 
     early_stopping_patience: int = 100      # How many iterations to wait for an improvement
     early_stopping_min_delta: float = 1e-2  # Minimum relative improvement of the smoothed loss that resets the patience counter
@@ -57,7 +57,7 @@ class DensificationParams:
     scale_threshold: float = 0.05 # Threshold used by original densification method. It decides whether the Gaussian should be splitted or cloned
     prune_threshold: float = 0.005 # Prune Gaussians below this concentration (relative to the concentration scale)
     injection_concentration: float = 0.01 # Concentration of injected Gaussians (relative to the concentration scale)
-    injection_scale: Optional[float] = None # Std of injected Gaussians and minimum spacing between them (m). None: 10%% of the shorter map side
+    injection_scale: Optional[float] = 0.5 # Std of injected Gaussians and minimum spacing between them (m). None: 10%% of the shorter map side
     densify_from: int = 100 # Densification will start at this iteration
     densify_until: int = 750 # Densification will stop at this iteration
     densify_interval: int = 50 # Iteration interval for densification
