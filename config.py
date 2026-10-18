@@ -57,7 +57,7 @@ class DensificationParams:
     scale_threshold: float = 0.05 # Threshold used by original densification method. It decides whether the Gaussian should be splitted or cloned
     prune_threshold: float = 0.005 # Prune Gaussians below this concentration (relative to the concentration scale)
     injection_concentration: float = 0.01 # Concentration of injected Gaussians (relative to the concentration scale)
-    injection_scale: Optional[float] = None # Std of injected Gaussians and minimum spacing between them (m). None: 10% of the shorter map side
+    injection_scale: Optional[float] = None # Std of injected Gaussians and minimum spacing between them (m). None: 10%% of the shorter map side
     densify_from: int = 100 # Densification will start at this iteration
     densify_until: int = 750 # Densification will stop at this iteration
     densify_interval: int = 50 # Iteration interval for densification

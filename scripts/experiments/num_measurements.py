@@ -1,16 +1,17 @@
 """
-Reconstruction error as measurements are added, for every method.
+Reconstruction error of every method as the number of measurements grows.
 
-On GADEN scenarios the measurements grow pose by pose, in the order the
-coverage selection picks the poses (each one adds the most newly covered
-free space), as a robot would visit them. Procedural maps have no poses, so
-their beams are added in a fixed random order instead. At every step each
-method reconstructs from the measurements gathered so far, from scratch.
+On GADEN scenarios the vantage poses stay fixed and the angular resolution of
+the sweep at each pose changes (--angular_steps, in degrees), as one would scan
+more finely with the same robot; the resulting number of beams is what the
+plots show, with the angular step on top. Procedural maps have no poses, so a
+growing number of beams (--beams) is taken from a fixed random order instead.
+Every method reconstructs each set of measurements from scratch.
 
-    python scripts/experiments/num_measurements.py --set tuning --steps 2 4 8 16 32
-    python scripts/experiments/num_measurements.py --seeds 0 1 2 --steps 10 20 40 80 160
+    python scripts/experiments/num_measurements.py --set simple --angular_steps 32 16 8 4 2 1
+    python scripts/experiments/num_measurements.py --seeds 0 1 2 --beams 10 20 40 80 160
 
-Meant for a simple environment (an empty room, a single obstacle), where the
+Meant for simple environments (an empty room, a single obstacle), where the
 effect of the number of measurements is easiest to see.
 """
 import os
@@ -33,29 +34,28 @@ from utils.plot_utils import set_publication_style
 from utils.experiment_utils import run_methods, save_experiment_results, yield_runs
 
 
-def first_measurements(batch: MeasurementBatch, k: int, seed: int | None) -> MeasurementBatch:
-    """Beams of the first k poses, or the first k beams in a fixed random order without poses."""
-    if batch.pose_ids is not None:
-        mask = batch.pose_ids < k
-        return MeasurementBatch(batch.beams[mask], batch.measurements[mask], batch.pose_ids[mask])
-    order = torch.as_tensor(np.random.default_rng(seed).permutation(len(batch.measurements))[:k],
-                            device=batch.beams.device)
-    return MeasurementBatch(batch.beams[order], batch.measurements[order])
-
-
-def run_step(cfg: Config, k: int, methods: list[str]) -> dict:
-    batch, environment = generate_simulation_data(cfg)
-    subset = first_measurements(batch, k, cfg.sim.seed)
-    metrics, _ = run_methods(subset, environment, cfg, methods)
-    return {"metrics": metrics, "beams": int(subset.measurements.shape[0])}
+def run_step(cfg: Config, step: float, methods: list[str]) -> dict:
+    """One point of the curve: the angular step (GADEN) or the number of beams (procedural)."""
+    if cfg.sim.scenario:
+        cfg.sim.angular_step = step
+        batch, environment = generate_simulation_data(cfg)
+    else:
+        cfg.sim.num_beams = max(cfg.sim.num_beams, int(step))
+        batch, environment = generate_simulation_data(cfg)
+        order = torch.as_tensor(np.random.default_rng(cfg.sim.seed).permutation(len(batch.measurements))[:int(step)],
+                                device=batch.beams.device)
+        batch = MeasurementBatch(batch.beams[order], batch.measurements[order])
+    metrics, _ = run_methods(batch, environment, cfg, methods)
+    return {"metrics": metrics, "beams": int(batch.measurements.shape[0])}
 
 
 def main():
-    parser = ArgumentParser(description="Reconstruction error as measurements are added")
+    parser = ArgumentParser(description="Reconstruction error as the number of measurements grows")
     parser.add_arguments(Config, dest="cfg")
-    add_case_arguments(parser)
-    parser.add_argument("--steps", nargs="+", type=int, required=True,
-                        help="Number of poses (GADEN scenarios) or beams (procedural maps) at each step")
+    add_case_arguments(parser, default_set="simple")
+    parser.add_argument("--angular_steps", nargs="+", type=float, default=None,
+                        help="Angular steps of the sweep at each pose (deg), for GADEN scenarios")
+    parser.add_argument("--beams", nargs="+", type=int, default=None, help="Numbers of beams, for procedural maps")
     parser.add_argument("--methods", nargs="+", default=list(AVAILABLE_METHODS), choices=list(AVAILABLE_METHODS))
     parser.add_argument("--workers", type=int, default=1, help="Runs in parallel (times become indicative)")
     args = parser.parse_args()
@@ -66,50 +66,70 @@ def main():
     set_publication_style()
 
     cases = get_cases(args.set, args.seeds)
-    label = "procedural" if args.seeds else args.set
-    unit = "beams" if args.seeds else "poses"
-    steps = sorted(args.steps)
-    if args.seeds:
-        # Procedural maps generate num_beams beams; the steps take prefixes of them
+    procedural = cases[0].scenario is None
+    steps = args.beams if procedural else args.angular_steps
+    if not steps:
+        sys.exit("Give --beams for procedural maps or --angular_steps for GADEN scenarios")
+    steps = sorted(steps, reverse=not procedural)   # fewest measurements first
+    if procedural:
         cfg.sim.num_beams = max(steps)
+    label = "procedural" if args.seeds else args.set
 
-    tasks = [((c.name, k), c.apply(cfg), {"k": k}) for c in cases for k in steps]
+    tasks = [((c.name, s), c.apply(cfg), {"step": s}) for c in cases for s in steps]
     results = {}
     for key, result, _ in tqdm(yield_runs(functools.partial(run_step, methods=args.methods), tasks,
                                           args.workers, warmup=True), total=len(tasks), desc="Runs"):
         results[key] = result
 
     names = [c.name for c in cases]
-    print(f"\n{'':18s}" + "".join(f"{k:>9d}" for k in steps) + f"   ({unit})")
+    # Procedural seeds share the same numbers of beams and are averaged; GADEN scenarios are shown one by one
+    panels = {"mean over seeds": names} if procedural else {n: [n] for n in names}
     curves = {}
-    for m in args.methods:
-        nrmse = [np.mean([results[(n, k)]["metrics"][m]["nrmse"] for n in names]) for k in steps]
-        time_s = [np.mean([results[(n, k)]["metrics"][m]["time"] for n in names]) for k in steps]
-        curves[m] = {"nrmse": nrmse, "time": time_s}
-        print(f"{m:18s}" + "".join(f"{100 * v:8.2f}%" for v in nrmse))
-    beams = [np.mean([results[(n, k)]["beams"] for n in names]) for k in steps]
+    for panel, members in panels.items():
+        beams = [float(np.mean([results[(n, s)]["beams"] for n in members])) for s in steps]
+        curves[panel] = {"beams": beams}
+        print(f"\n{panel}")
+        print(f"  {'':18s}" + "".join(f"{b:>9.0f}" for b in beams) + "   (beams)")
+        if not procedural:
+            print(f"  {'':18s}" + "".join(f"{s:>8g}°" for s in steps) + "   (angular step)")
+        for m in args.methods:
+            nrmse = [float(np.mean([results[(n, s)]["metrics"][m]["nrmse"] for n in members])) for s in steps]
+            time_s = [float(np.mean([results[(n, s)]["metrics"][m]["time"] for n in members])) for s in steps]
+            curves[panel][m] = {"nrmse": nrmse, "time": time_s}
+            print(f"  {m:18s}" + "".join(f"{100 * v:8.2f}%" for v in nrmse))
 
     save_experiment_results(
-        {"experiment_name": f"num_measurements_{label}", "cases": names, "steps": steps, "unit": unit,
-         "methods": args.methods, "config": dataclasses.asdict(cfg)},
-        {"runs": [{"case": n, "step": k, **results[(n, k)]} for n in names for k in steps],
-         "curves": curves, "mean_beams": beams},
+        {"experiment_name": f"num_measurements_{label}", "cases": names, "steps": steps,
+         "step_unit": "beams" if procedural else "angular step (deg)", "methods": args.methods,
+         "config": dataclasses.asdict(cfg)},
+        {"runs": [{"case": n, "step": s, **results[(n, s)]} for n in names for s in steps], "curves": curves},
     )
 
-    fig, (ax_err, ax_time) = plt.subplots(1, 2, figsize=(14, 5))
-    for m in args.methods:
-        style = AVAILABLE_METHODS[m]["style"]
-        kw = dict(color=style["color"], marker=style["marker"], lw=style.get("linewidth", 1.5),
-                  ms=style.get("markersize", 6), label=m)
-        ax_err.plot(steps, 100 * np.array(curves[m]["nrmse"]), **kw)
-        ax_time.plot(steps, curves[m]["time"], **kw)
-    for ax, ylabel in [(ax_err, "NRMSE (% of peak)"), (ax_time, "Reconstruction time (s)")]:
-        ax.set_xlabel(f"Number of {unit}")
-        ax.set_ylabel(ylabel)
-        ax.set_xticks(steps)
-        ax.grid(True, ls="--", alpha=0.3)
-    ax_err.legend()
-    fig.suptitle(f"Reconstruction vs. number of measurements ({label}, mean over {len(names)} cases)")
+    fig, axs = plt.subplots(2, len(panels), figsize=(7 * len(panels), 9), squeeze=False)
+    for j, (panel, curve) in enumerate(curves.items()):
+        for m in args.methods:
+            style = AVAILABLE_METHODS[m]["style"]
+            kw = dict(color=style["color"], marker=style["marker"], lw=style.get("linewidth", 1.5),
+                      ms=style.get("markersize", 6), label=m)
+            axs[0, j].plot(curve["beams"], 100 * np.array(curve[m]["nrmse"]), **kw)
+            axs[1, j].plot(curve["beams"], curve[m]["time"], **kw)
+        for i, ylabel in enumerate(["NRMSE (% of peak)", "Reconstruction time (s)"]):
+            ax = axs[i, j]
+            ax.set_xscale("log")
+            ax.set_xticks(curve["beams"])
+            ax.set_xticklabels([f"{b:.0f}" for b in curve["beams"]])
+            ax.minorticks_off()
+            ax.set_xlabel("Number of beams")
+            ax.set_ylabel(ylabel)
+            ax.grid(True, ls="--", alpha=0.3)
+        title = panel.split("_h")[0]
+        if not procedural:
+            top = axs[0, j].secondary_xaxis("top")
+            top.set_xticks(curve["beams"])
+            top.set_xticklabels([f"{s:g}°" for s in steps])
+            top.set_xlabel("Angular step at each pose")
+        axs[0, j].set_title(title)
+    axs[0, 0].legend()
     fig.tight_layout()
     save_path = os.path.join(os.path.dirname(__file__), '..', '..', 'plots', f'num_measurements_{label}.png')
     os.makedirs(os.path.dirname(save_path), exist_ok=True)

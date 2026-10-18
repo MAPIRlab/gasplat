@@ -47,15 +47,23 @@ HELD_OUT = [
     ("House28", "8-1,3_slow"),        # broad spread from the source room
 ]
 
+# GADEN test environments (10 x 6 m rooms), simulated with gaden_core by
+# scripts/tools/simulate_gaden.py, for the experiment on the number of measurements
+SIMPLE = [
+    "10x6_empty_room_sim1_h0.75_t1000",       # beam plane through the line source (z = 0.7)
+    "10x6_central_obstacle_sim1_h0.55_t1000",  # beam plane through the point source (z = 0.5)
+]
+
 PROCEDURAL_SEEDS = list(range(10))
 
-SETS = {"tuning": TUNING, "held_out": HELD_OUT, "all": TUNING + HELD_OUT, "procedural": PROCEDURAL_SEEDS}
+SETS = {"tuning": TUNING, "held_out": HELD_OUT, "all": TUNING + HELD_OUT, "simple": SIMPLE,
+        "procedural": PROCEDURAL_SEEDS}
 
 
 def scenario_dirs(set_name: str, root: str = DEFAULT_ROOT) -> list[str]:
     """Scenario package directories of a GADEN set, in the order listed above."""
-    return [os.path.join(root, scenario_name(house, sim, HEIGHT, ITERATION))
-            for house, sim in SETS[set_name]]
+    return [os.path.join(root, entry if isinstance(entry, str) else scenario_name(*entry, HEIGHT, ITERATION))
+            for entry in SETS[set_name]]
 
 
 @dataclass(frozen=True)
@@ -90,8 +98,8 @@ def get_cases(set_name: str | None = None, seeds: list[int] | None = None, root:
     cases = [Case(os.path.basename(d), scenario=d) for d in scenario_dirs(set_name, root)]
     missing = [c.name for c in cases if not os.path.exists(os.path.join(c.scenario, "scenario.npz"))]
     if missing:
-        raise SystemExit(f"Missing scenarios: {', '.join(missing)}. "
-                         "Extract them with scripts/tools/make_scenarios.py")
+        tool = "simulate_gaden.py" if set_name == "simple" else "make_scenarios.py"
+        raise SystemExit(f"Missing scenarios: {', '.join(missing)}. Create them with scripts/tools/{tool}")
     return cases
 
 

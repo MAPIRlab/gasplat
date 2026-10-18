@@ -609,9 +609,15 @@ def generate_scenario_data(cfg: Config, beam_rng: np.random.Generator,
     if not quiet: print(f"{len(beams_list)} beams from {len(poses)} poses "
                         f"(one every {cfg.sim.angular_step} deg)")
 
+    # Measurements integrate the finer map when the package has one, so that the grid
+    # methods do not reconstruct on the very grid the data was generated on
+    if sc.gas_map_fine is not None:
+        integrals = simulate_gas_integrals(sc.gas_map_fine, beams_list, cfg.env.cell_size / sc.meta["fine_factor"],
+                                           quiet=quiet)
+    else:
+        integrals = simulate_gas_integrals(sc.gas_map, beams_list, cfg.env.cell_size, quiet=quiet)
     dev = cfg.device
-    y_true = torch.tensor(simulate_gas_integrals(sc.gas_map, beams_list, cfg.env.cell_size, quiet=quiet),
-                          dtype=torch.float32, device=dev)
+    y_true = torch.tensor(integrals, dtype=torch.float32, device=dev)
     measurements = y_true
     if cfg.sim.noise:
         if not quiet: print(f"Adding noise to the measurements ({cfg.sim.snr_db} dB)...")

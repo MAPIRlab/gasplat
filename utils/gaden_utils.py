@@ -383,9 +383,10 @@ def extract_scenario(house_zip: str, simulation: str, root: str = DEFAULT_ROOT,
 
 @dataclass
 class Scenario:
-    gas_map: np.ndarray       # (H, W) [ppm]
+    gas_map: np.ndarray       # (H, W) [ppm], at the cell centers: ground truth for evaluation
     occupancy: np.ndarray     # (H, W) uint8 codes
     meta: dict
+    gas_map_fine: np.ndarray | None = None   # (H*f, W*f) [ppm], f = meta["fine_factor"]: simulates the measurements
 
     @property
     def obstacles(self) -> np.ndarray:
@@ -397,7 +398,8 @@ def load_scenario(path: str) -> Scenario:
     data = np.load(os.path.join(path, "scenario.npz"))
     with open(os.path.join(path, "meta.json")) as f:
         meta = json.load(f)
-    return Scenario(data["gas_map"], data["occupancy"], meta)
+    fine = data["gas_map_fine"] if "gas_map_fine" in data.files else None
+    return Scenario(data["gas_map"], data["occupancy"], meta, fine)
 
 
 def save_preview(path, gas_map, occupancy, meta, beams=None):
@@ -418,7 +420,8 @@ def save_preview(path, gas_map, occupancy, meta, beams=None):
             ax.plot([x0, x1], [y0, y1], color="tab:orange", lw=0.5, alpha=0.6)
     sx, sy = meta["source_local"]
     ax.plot(sx, sy, marker="*", color="red", ms=12, mec="white")
-    ax.set_title(f"Iteration {meta['iteration']}, z = {meta['layer_center_z']:.2f} m "
+    snapshot = f"Iteration {meta['iteration']}" if "iteration" in meta else f"t = {meta['time_s']:.0f} s"
+    ax.set_title(f"{snapshot}, z = {meta['layer_center_z']:.2f} m "
                  f"({meta['height_above_floor']:.2f} m above floor)")
     ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
     fig.colorbar(im, ax=ax, label="ppm", shrink=0.8)
