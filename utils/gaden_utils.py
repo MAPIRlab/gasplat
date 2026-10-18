@@ -16,7 +16,9 @@ every 0.5 s).
 Scenario package (one directory per snapshot, named automatically as
 <house>_<simulation>_h<height above floor>_it<iteration>, e.g.
 house01_2,4-1_slow_h0.85_it1999, under data/scenarios by default):
-    scenario.npz   gas_map   (H, W) float32  concentration [ppm]
+    scenario.npz   gas_map   (H, W) float32  concentration at the cell centers [ppm]
+                   gas_map_fine (H*f, W*f) float32  same slice, f x f samples per cell,
+                             used to simulate the measurements (f = meta["fine_factor"])
                    occupancy (H, W) uint8    0 = free, 1 = obstacle, 2 = outlet
     meta.json      cell size, world origin of the local frame, slice height,
                    source position, iteration, ...
@@ -233,7 +235,7 @@ class VGRHouse:
 # ==========================================
 
 def concentration_slice(grid: GadenGrid, it: GadenIteration, k: int,
-                        cutoff_sigmas: float = 5.0) -> np.ndarray:
+                        cutoff_sigmas: float = 5.0, fine_factor: int = 1):
     """Concentration [ppm] at the centers of the cells of layer k.
 
     Re-implements GADEN's player model, vectorized per filament:
@@ -243,7 +245,12 @@ def concentration_slice(grid: GadenGrid, it: GadenIteration, k: int,
         checked by stepping one cell size at a time, as GADEN does.
     Obstacle and outlet cells are set to 0.
 
-    Returns an (nx, ny) array (GADEN's x/y indexing, not GASPLAT's (H, W)).
+    With fine_factor f > 1, the slice is also sampled at f x f points per cell
+    (sub-cell centers). Their line of sight is the one of their cell, while their
+    distance to each filament is exact.
+
+    Returns an (nx, ny) array (GADEN's x/y indexing, not GASPLAT's (H, W)), or a
+    tuple (centers (nx, ny), fine (nx*f, ny*f)) when fine_factor > 1.
     """
     nx, ny, nz = grid.shape
     cs = grid.cell_size
@@ -251,6 +258,9 @@ def concentration_slice(grid: GadenGrid, it: GadenIteration, k: int,
     free = grid.free
     out = np.zeros((nx, ny))
     z_c = emin[2] + (k + 0.5) * cs
+    f = fine_factor
+    out_fine = np.zeros((nx * f, ny * f)) if f > 1 else None
+    sub = (np.arange(f) + 0.5) / f - 0.5            # sub-cell offsets, in cells
 
     # GADEN's gaussian normalization, folded into one constant (ppm units)
     scale = it.total_moles_in_filament / it.num_moles_all_gases_in_cm3 * 1e6 / math.sqrt(8 * math.pi ** 3)
@@ -297,7 +307,19 @@ def concentration_slice(grid: GadenGrid, it: GadenIteration, k: int,
         c = scale / sigma_cm ** 3 * np.exp(-d_cm ** 2 / (2 * sigma_cm ** 2))
         np.add.at(out, (ii[visible], jj[visible]), c)
 
-    return out
+        if f > 1:
+            # Sub-cell points of the visible cells: (M, f, f) positions and indices
+            vi, vj, vloc = ii[visible], jj[visible], loc[visible]
+            px = vloc[:, 0, None, None] + sub[None, :, None] * cs
+            py = vloc[:, 1, None, None] + sub[None, None, :] * cs
+            d_fine = 100.0 * np.sqrt((x_f - px) ** 2 + (y_f - py) ** 2 + (z_f - z_c) ** 2)
+            c_fine = np.where(d_fine <= 100.0 * r, scale / sigma_cm ** 3 * np.exp(-d_fine ** 2 / (2 * sigma_cm ** 2)), 0.0)
+            fi = vi[:, None, None] * f + np.arange(f)[None, :, None]
+            fj = vj[:, None, None] * f + np.arange(f)[None, None, :]
+            np.add.at(out_fine, (np.broadcast_to(fi, c_fine.shape).ravel(), np.broadcast_to(fj, c_fine.shape).ravel()),
+                      c_fine.ravel())
+
+    return (out, out_fine) if f > 1 else out
 
 
 # ==========================================
@@ -316,7 +338,8 @@ def scenario_name(house: str, simulation: str, height_above_floor: float, iterat
 
 def extract_scenario(house_zip: str, simulation: str, root: str = DEFAULT_ROOT,
                      height: float = 0.85, iteration: int | None = None,
-                     crop_margin: int = 1, cutoff_sigmas: float = 5.0) -> tuple[str, dict]:
+                     crop_margin: int = 1, cutoff_sigmas: float = 5.0,
+                     fine_factor: int = 4) -> tuple[str, dict]:
     """Build a scenario package from one snapshot of a VGR simulation.
 
     The package is written to root/<scenario_name(...)>, named after the
@@ -346,7 +369,14 @@ def extract_scenario(house_zip: str, simulation: str, root: str = DEFAULT_ROOT,
 
     # --- concentration slice ---
     it = house.iteration(simulation, iteration)
-    gas_map = _to_map(concentration_slice(grid, it, k, cutoff_sigmas)[crop]).astype(np.float32)
+    slices = concentration_slice(grid, it, k, cutoff_sigmas, fine_factor)
+    centers, fine = slices if fine_factor > 1 else (slices, None)
+    gas_map = _to_map(centers[crop]).astype(np.float32)
+    # Finer samples of the same slice, to simulate the measurements on
+    arrays = {"gas_map": gas_map, "occupancy": occupancy}
+    if fine is not None:
+        f = fine_factor
+        arrays["gas_map_fine"] = _to_map(fine[lo[0] * f:hi[0] * f, lo[1] * f:hi[1] * f]).astype(np.float32)
     source = it.source_position
 
     cs = grid.cell_size
@@ -368,13 +398,14 @@ def extract_scenario(house_zip: str, simulation: str, root: str = DEFAULT_ROOT,
         "source_local": [source[0] - origin_world[0], source[1] - origin_world[1]],
         "units": "ppm (maps), ppm*m (beam integrals)",
         "cutoff_sigmas": cutoff_sigmas,
+        "fine_factor": fine_factor,
         "occupancy_codes": {"free": FREE, "obstacle": OBSTACLE, "outlet": OUTLET},
     }
 
     meta["name"] = scenario_name(house.name, simulation, meta["height_above_floor"], iteration)
     out_dir = os.path.join(root, meta["name"])
     os.makedirs(out_dir, exist_ok=True)
-    np.savez_compressed(os.path.join(out_dir, "scenario.npz"), gas_map=gas_map, occupancy=occupancy)
+    np.savez_compressed(os.path.join(out_dir, "scenario.npz"), **arrays)
     with open(os.path.join(out_dir, "meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
     save_preview(os.path.join(out_dir, "preview.png"), gas_map, occupancy, meta)
