@@ -20,7 +20,8 @@ def extract_candidate_positions(
 ) -> torch.Tensor:
     """
     Extracts locations for new Gaussians by intersecting the beams the model
-    does not explain, and thinning the result by spatial non-maximum suppression.
+    does not explain (or taking the midpoint of those that cross no other one),
+    and thinning the result by spatial non-maximum suppression.
 
     Args:
         beams: Tensor of shape (N, 2, 2) representing the start and end points of the beams.
@@ -54,7 +55,7 @@ def extract_candidate_positions(
     # Both sides share the length of the beam, so the test needs no normalization.
     admitted = importance_scores > predictions
     num_admitted = int(admitted.sum())
-    if num_admitted < 2:
+    if num_admitted == 0:
         return empty
 
     # 2. The admitted beams are scored by the average concentration missing along
@@ -68,13 +69,14 @@ def extract_candidate_positions(
     normalized_scores = importance_scores / lengths
 
     admitted_scores = normalized_scores[admitted]
-    threshold = torch.mean(admitted_scores) + torch.std(admitted_scores)
+    spread = torch.std(admitted_scores) if num_admitted > 1 else 0.0
+    threshold = torch.mean(admitted_scores) + spread
 
     candidate_mask = admitted & (normalized_scores >= threshold)
     candidate_indices = torch.where(candidate_mask)[0]
 
     num_candidates = candidate_indices.shape[0]
-    if num_candidates < 2:
+    if num_candidates == 0:
         return empty
 
     # 3. Geometric Intersections of candidate segments
@@ -102,9 +104,6 @@ def extract_candidate_positions(
     # We use 0.01 and 0.99 to avoid intersections exactly at the emitters (radial origins).
     in_bounds = (t >= 0.01) & (t <= 0.99) & (u >= 0.01) & (u <= 0.99)
     keep_mask = valid_intersection & in_bounds
-    
-    if not keep_mask.any():
-        return empty
         
     # Calculate exact coordinates for valid intersections
     px = x1[keep_mask] + t[keep_mask] * (x2[keep_mask] - x1[keep_mask])
@@ -112,6 +111,16 @@ def extract_candidate_positions(
     
     intersections = torch.stack([px, py], dim=-1)
     int_scores = candidate_scores[i[keep_mask]] + candidate_scores[j[keep_mask]]
+
+    # A candidate that crosses no other candidate still reports gas missing somewhere
+    # along it, so its midpoint stands in for the unknown position. It is scored by its
+    # own residual alone, below any intersection, which NMS therefore prefers
+    crossed = torch.zeros(num_candidates, dtype=torch.bool, device=device)
+    crossed[i[keep_mask]] = True
+    crossed[j[keep_mask]] = True
+    midpoints = candidate_beams[~crossed].mean(dim=1)
+    intersections = torch.cat([intersections, midpoints], dim=0)
+    int_scores = torch.cat([int_scores, candidate_scores[~crossed]], dim=0)
 
     # 4. Discard candidates too close to already-placed Gaussians
     if existing_pos is not None and existing_pos.shape[0] > 0:
