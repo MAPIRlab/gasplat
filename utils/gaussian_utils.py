@@ -4,48 +4,6 @@ import torch
 def inverse_softplus(x):
     return torch.where(x > 20.0, x, torch.log(torch.expm1(x)))
 
-def compute_integral(pos, cov_inv, concentration, beams):
-    """
-    Computes predicted projections, given gaussians' parameters and rays information.
-    
-    Args:
-        pos (Tensor (K,2)): Gaussians' positions (mu)
-        cov_inv (Tensor (K,2,2)): Gaussians' covariance inverse matrix (Sigma^-1)
-        concentration (Tensor (K,)): Gaussians' concentrations (rho)
-        beams (Tensor (N, 2, 2)): Rays defined by pairs of [start_point, end_point]
-
-    Returns:
-        y_pred (Tensor (N,)): Predicted projections
-    """
-
-    p_rays = beams[:, 0, :] # Starting points (N, 2)
-
-    u_rays = beams[:, 1, :] - p_rays # u = E - S
-    # Normalize rays' vectors
-    u = u_rays / torch.norm(u_rays, dim=1, keepdim=True)
-
-    # d = p - mu
-    # p (N, 1, 2) - mu (1, K, 2) = d (N, K, 2)
-    diff = p_rays.unsqueeze(1) - pos.unsqueeze(0)
-
-    # A = 0.5 * u^T * Sigma^-1 * u
-    A = 0.5 * torch.einsum('ni,kij,nj->nk', u, cov_inv, u)
-    A = torch.clamp(A, min=1e-8)
-
-    # B = u^T * Sigma^-1 * d
-    B = torch.einsum('ni,kij,nkj->nk', u, cov_inv, diff)
-
-    # C = 0.5 * d^T * Sigma^-1 * d
-    C = 0.5 * torch.einsum('nki,kij,nkj->nk', diff, cov_inv, diff)
-    
-    term_exp = (B**2) / (4 * A) - C
-    
-    integral_matrix = torch.sqrt(torch.pi / A) * torch.exp(term_exp) # (N, K)
-
-    y_pred = torch.matmul(integral_matrix, concentration) # (N,)
-
-    return y_pred
-
 def compute_definite_integral(pos, cov_inv, concentration, beams):
     """
     Computes predicted projections using the definite integral over line segments,
@@ -105,6 +63,53 @@ def compute_definite_integral(pos, cov_inv, concentration, beams):
     y_pred = torch.matmul(integral_matrix, concentration) # (N,)
 
     return y_pred
+
+def segment_mahalanobis_sq(pos, cov_inv, beams):
+    """
+    Squared Mahalanobis distance between each beam segment and each Gaussian center,
+    at the closest point of the segment, (N, K). Along a beam the squared distance is
+    a*t^2 + b*t + c for t in [0, 1], minimized in closed form.
+    """
+    origin, direction = beams[:, 0, :], beams[:, 1, :] - beams[:, 0, :]   # (N, 2)
+    offset = origin[:, None, :] - pos[None, :, :]                           # (N, K, 2)
+    cov_inv_dir = torch.einsum('kij,nj->nki', cov_inv, direction)          # (N, K, 2)
+    a = (direction[:, None, :] * cov_inv_dir).sum(-1)
+    b = 2 * (offset * cov_inv_dir).sum(-1)
+    c = torch.einsum('nki,kij,nkj->nk', offset, cov_inv, offset)
+    t = (-b / (2 * a.clamp_min(1e-12))).clamp(0, 1)
+    return a * t**2 + b * t + c
+
+
+def compute_sparse_integral(pos, cov_inv, concentration, beams, beam_idx, gauss_idx):
+    """
+    compute_definite_integral restricted to the given (beam, Gaussian) pairs: the
+    same closed form, evaluated pair by pair and summed per beam.
+
+    Args:
+        beam_idx, gauss_idx (Tensor (P,)): the pairs to evaluate.
+
+    Returns:
+        y_pred (Tensor (N,)): Predicted projections
+    """
+    origin = beams[beam_idx, 0, :]                       # (P, 2)
+    v = beams[beam_idx, 1, :] - origin                   # (P, 2)
+    length = torch.norm(v, dim=1)
+    d = origin - pos[gauss_idx]                          # (P, 2)
+    S = cov_inv[gauss_idx]                               # (P, 2, 2)
+
+    Sv = torch.einsum('pij,pj->pi', S, v)
+    A = torch.clamp(0.5 * (v * Sv).sum(-1), min=1e-8)
+    B = (d * Sv).sum(-1)
+    C = 0.5 * torch.einsum('pi,pij,pj->p', d, S, d)
+
+    sqrt_A = torch.sqrt(A)
+    u0 = B / (2 * sqrt_A)
+    u1 = sqrt_A + u0
+    integral = (math.sqrt(math.pi) / (2 * sqrt_A)) * torch.exp(B**2 / (4 * A) - C) * (torch.erf(u1) - torch.erf(u0))
+
+    contributions = integral * length * concentration[gauss_idx]
+    return torch.zeros(beams.shape[0], dtype=contributions.dtype, device=beams.device).index_add(0, beam_idx, contributions)
+
 
 def estimate_concentration_scale(beams: torch.Tensor, measurements: torch.Tensor) -> float:
     """Largest path-averaged concentration of a batch, max_n y_n / l_n (ppm). 0 if no beam carries gas."""

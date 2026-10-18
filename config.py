@@ -36,6 +36,7 @@ class TrainParams:
     concentration_lr: float = 0.02 # Concentration learning rate
 
     iterations: int = 1500 # Max number of iterations
+    gaussian_support: float = 3.0 # Gaussians are truncated at this many standard deviations: farther beams neither see nor cross them
 
     scale_update_factor: float = 2.0 # Raise the concentration scale when a batch exceeds it by this factor
 

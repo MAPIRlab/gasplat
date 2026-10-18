@@ -1,4 +1,7 @@
+import os
+import json
 import math
+import hashlib
 import torch
 import numpy as np
 from dataclasses import dataclass
@@ -448,6 +451,23 @@ def sweep_angles(heading: float, angular_step: float, fov: float = 360.0) -> np.
     return heading + np.radians((np.arange(n) - (n - 1) / 2) * angular_step)
 
 
+def cached_vantage_poses(cache_dir: str, obstacles: np.ndarray, cell_size: float, num_poses: int | None,
+                         min_clearance: float, max_range: float, min_angle: float, coverage: float) -> np.ndarray:
+    """select_vantage_poses, stored in cache_dir. The poses depend only on the map and
+    these settings, and choosing them is the slowest part of generating the data."""
+    settings = json.dumps([num_poses, min_clearance, max_range, min_angle, coverage, cell_size])
+    key = hashlib.sha1(settings.encode() + np.ascontiguousarray(obstacles, dtype=bool).tobytes()).hexdigest()[:12]
+    path = os.path.join(cache_dir, f"poses_{key}.npy")
+    if os.path.exists(path):
+        return np.load(path)
+    poses = select_vantage_poses(obstacles, cell_size, num_poses, min_clearance, max_range, min_angle, coverage)
+    tmp = f"{path}.{os.getpid()}.tmp"  # parallel runs may write the same file
+    with open(tmp, "wb") as f:
+        np.save(f, poses)
+    os.replace(tmp, path)
+    return poses
+
+
 def generate_vantage_beams(obstacles: np.ndarray, cell_size: float, angular_step: float,
                            num_poses: int | None = None, poses: np.ndarray | None = None,
                            min_clearance: float = 0.3, max_range: float = 30.0,
@@ -596,8 +616,11 @@ def generate_scenario_data(cfg: Config, beam_rng: np.random.Generator,
 
     if not quiet: print(f"Loaded scenario {cfg.sim.scenario} "
                         f"({obstacles.shape[1]}x{obstacles.shape[0]} cells). Generating beams...")
+    poses = cached_vantage_poses(cfg.sim.scenario, obstacles, cfg.env.cell_size, cfg.sim.num_poses,
+                                 cfg.sim.min_clearance, cfg.sim.max_range, cfg.sim.min_crossing_angle,
+                                 cfg.sim.coverage)
     beams_list, pose_ids, poses = generate_vantage_beams(
-        obstacles, cfg.env.cell_size, cfg.sim.angular_step,
+        obstacles, cfg.env.cell_size, cfg.sim.angular_step, poses=poses,
         num_poses=cfg.sim.num_poses,
         min_clearance=cfg.sim.min_clearance,
         max_range=cfg.sim.max_range,

@@ -5,8 +5,9 @@ import math
 
 from config import Config
 from utils.gaussian_utils import (
-    compute_definite_integral,
-    inverse_softplus
+    compute_sparse_integral,
+    inverse_softplus,
+    segment_mahalanobis_sq,
 )
 
 class GasSplattingModel(nn.Module):
@@ -23,6 +24,12 @@ class GasSplattingModel(nn.Module):
 
         self.splits = 0
         self.clones = 0
+
+        # Support of every Gaussian, in standard deviations: beams passing farther
+        # away neither contribute to its predictions nor count as crossing it
+        self.support = cfg.train.gaussian_support
+        # Beams crossing each Gaussian in the last forward pass, reused by densification
+        self.last_crossing_counts: torch.Tensor | None = None
 
         # Unit (ppm) concentrations are learned in, set from the measurements. None until gas is measured
         self.concentration_scale: float | None = None
@@ -184,7 +191,14 @@ class GasSplattingModel(nn.Module):
         covariance_inverse = self.get_covariance_inverse()
         concentration = self.get_concentration()
 
-        return compute_definite_integral(pos, covariance_inverse, concentration, beams)
+        # Only the pairs within the support are integrated; a beam just outside it
+        # would collect at most exp(-support^2 / 2) of what a beam through the center does
+        with torch.no_grad():
+            inside = segment_mahalanobis_sq(pos, covariance_inverse, beams) <= self.support**2   # (N, K)
+            self.last_crossing_counts = inside.sum(dim=0)
+            beam_idx, gauss_idx = torch.nonzero(inside, as_tuple=True)
+
+        return compute_sparse_integral(pos, covariance_inverse, concentration, beams, beam_idx, gauss_idx)
     
     def inject_gaussians(self, optimizer: torch.optim.Optimizer, pos: torch.Tensor, scale: float, concentration: float):
         """
@@ -546,23 +560,14 @@ class GasSplattingModel(nn.Module):
 
         return {'splits': num_splits, 'clones': num_clones, 'prunes': num_prunes}
 
-    def count_crossing_beams(self, beams: torch.Tensor, n_sigma: float = 3.0) -> torch.Tensor:
+    def count_crossing_beams(self, beams: torch.Tensor) -> torch.Tensor:
         """
-        Number of beams that pass within n_sigma standard deviations (Mahalanobis
-        distance) of the center of each Gaussian, (K,). Beams farther away barely
-        see it: at 3 sigmas a beam collects about 1% of what a beam through the center does.
+        Number of beams that pass within the support of each Gaussian (Mahalanobis
+        distance), (K,).
         """
         with torch.no_grad():
-            origin, direction = beams[:, 0, :], beams[:, 1, :] - beams[:, 0, :]   # (N, 2)
-            cov_inv = self.get_covariance_inverse()                                 # (K, 2, 2)
-            offset = origin[:, None, :] - self.get_pos()[None, :, :]                # (N, K, 2)
-            # Squared Mahalanobis distance along the beam, a*t^2 + b*t + c for t in [0, 1]
-            cov_inv_dir = torch.einsum('kij,nj->nki', cov_inv, direction)           # (N, K, 2)
-            a = (direction[:, None, :] * cov_inv_dir).sum(-1)
-            b = 2 * (offset * cov_inv_dir).sum(-1)
-            c = torch.einsum('nki,kij,nkj->nk', offset, cov_inv, offset)
-            t = (-b / (2 * a.clamp_min(1e-12))).clamp(0, 1)
-            return ((a * t**2 + b * t + c) <= n_sigma**2).sum(dim=0)
+            distance_sq = segment_mahalanobis_sq(self.get_pos(), self.get_covariance_inverse(), beams)
+            return (distance_sq <= self.support**2).sum(dim=0)
 
     def update_accum_gradient(self, beams: torch.Tensor):
         """
@@ -574,7 +579,10 @@ class GasSplattingModel(nn.Module):
         of the beams sees each Gaussian.
         """
         if self._pos.grad is not None:
-            crossing = self.count_crossing_beams(beams)
+            # Counts from the forward pass that produced this gradient, if it saw these beams
+            crossing = self.last_crossing_counts
+            if crossing is None or crossing.shape[0] != self.num_gaussians:
+                crossing = self.count_crossing_beams(beams)
             grad_norm = torch.linalg.vector_norm(self._pos.grad, dim=-1)
             grad_norm = (grad_norm * beams.shape[0] / crossing.clamp_min(1)).unsqueeze(1)
             mask = (crossing > 0).unsqueeze(1)

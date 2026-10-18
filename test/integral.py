@@ -3,52 +3,7 @@ import numpy as np
 import math
 import unittest
 
-from utils.gaussian_utils import compute_integral, compute_definite_integral
-
-class TestIntegral(unittest.TestCase):
-    def setUp(self):
-        self.num_gaussians = 3
-        self.num_beams = 5
-
-        # Gaussians parameters
-        self.means = torch.rand(self.num_gaussians, 2)
-        L = torch.randn(self.num_gaussians, 2, 2)
-        sigmas = torch.bmm(L, L.transpose(1, 2)) + torch.eye(2) * 0.1
-        self.inv_sigmas = torch.inverse(sigmas)
-        self.concentrations = torch.ones(self.num_gaussians)
-
-        # Beams
-        self.beams = torch.randn(self.num_beams, 2, 2) * 5
-
-    def test_predicted_measurements_shape(self):
-        """
-        Tests compute_integral() with multiple gaussians and beams to check dimensionality problems.
-        """
-
-        with torch.no_grad():
-            y_pred = compute_integral(self.means, self.inv_sigmas, self.concentrations, self.beams)
-
-        self.assertEqual(y_pred.shape, (self.num_beams,))
-
-    def test_integral_value(self):
-        """
-        Tests compute_integral() to check that the integral value is computed properly.
-        """
-        
-        # Standard Gaussian
-        mean = torch.tensor([[0.0, 0.0]])
-        sigma = torch.eye(2).unsqueeze(0)
-        inv_sigma = torch.inverse(sigma)
-
-        # Ray along X-axis
-        beam = torch.tensor([
-            [[-1.0, 0.0], [1.0, 0.0]],
-        ])
-
-        y_pred = compute_integral(mean, inv_sigma, torch.tensor([1.0]), beam)
-        y_real = np.sqrt(2*np.pi) # Expected value
-
-        self.assertAlmostEqual(y_pred, y_real)
+from utils.gaussian_utils import compute_definite_integral, compute_sparse_integral
 
 class TestDefiniteIntegral(unittest.TestCase):
     def setUp(self):
@@ -123,12 +78,22 @@ class TestDefiniteIntegral(unittest.TestCase):
 
         y_pred = compute_definite_integral(pos, cov_inv, concentration, beams)
 
-        # All of them must be equal
-        self.assertAlmostEqual(y_pred[0].item(), y_pred[1].item())
-        self.assertAlmostEqual(y_pred[1].item(), y_pred[2].item())
+        # All of them must be equal (to float32 precision)
+        self.assertAlmostEqual(y_pred[0].item(), y_pred[1].item(), places=6)
+        self.assertAlmostEqual(y_pred[1].item(), y_pred[2].item(), places=6)
 
         # Expected integral value
-        self.assertAlmostEqual(y_pred[0].item(), math.sqrt(math.pi/2))
+        self.assertAlmostEqual(y_pred[0].item(), math.sqrt(math.pi/2), places=6)
+
+    def test_sparse_matches_dense(self):
+        """
+        Checks that compute_sparse_integral() over every beam-Gaussian pair equals compute_definite_integral().
+        """
+        beam_idx, gauss_idx = torch.meshgrid(torch.arange(self.num_beams), torch.arange(self.num_gaussians), indexing="ij")
+        y_sparse = compute_sparse_integral(self.means, self.inv_sigmas, self.concentrations, self.beams,
+                                           beam_idx.flatten(), gauss_idx.flatten())
+        y_dense = compute_definite_integral(self.means, self.inv_sigmas, self.concentrations, self.beams)
+        torch.testing.assert_close(y_sparse, y_dense)
 
 if __name__ == "__main__":
     unittest.main()
