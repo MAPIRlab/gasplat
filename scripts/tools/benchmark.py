@@ -24,7 +24,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 from config import Config
 from utils.scenario_sets import add_case_arguments, get_cases
 from utils.plot_utils import plot_reconstruction_grid, set_publication_style
-from utils.experiment_utils import yield_scenario_runs, save_experiment_results
+from utils.experiment_utils import default_workers, yield_scenario_runs, save_experiment_results
 
 COLUMNS = [("nrmse", "NRMSE %", 100, ".2f"), ("peak_ratio", "peak", 1, ".2f"), ("mass_error", "mass %", 100, "+.1f"),
            ("leak", "leak %", 100, ".2f"), ("gaussians", "gauss", 1, "d"), ("poses", "poses", 1, "d"),
@@ -45,7 +45,8 @@ def main():
     parser = ArgumentParser(description="Benchmark GASPLAT on a set of GADEN scenarios")
     parser.add_arguments(Config, dest="cfg")
     add_case_arguments(parser)
-    parser.add_argument("--workers", type=int, default=4, help="Scenarios run in parallel")
+    parser.add_argument("--workers", type=int, default=default_workers(),
+                        help="Runs in parallel (default: one per GPU, so that no run waits for another)")
     args = parser.parse_args()
     cfg: Config = args.cfg
     cfg.quiet = True

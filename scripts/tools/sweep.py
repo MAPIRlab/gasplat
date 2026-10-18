@@ -33,7 +33,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 from config import Config
 from utils.scenario_sets import add_case_arguments, get_cases
 from utils.plot_utils import plot_sweep, set_publication_style
-from utils.experiment_utils import yield_scenario_runs, save_experiment_results
+from utils.experiment_utils import default_workers, yield_scenario_runs, save_experiment_results
 
 GROUPS = ("env", "sim", "train", "densify")
 RESULTS_DIR = "results"
@@ -98,7 +98,8 @@ def main():
     parser.add_argument("--factors", nargs="+", type=float, default=[0.25, 0.5, 1, 2, 4, 8],
                         help="Multiples of the current value to try when --values is not given")
     add_case_arguments(parser)
-    parser.add_argument("--workers", type=int, default=4, help="Runs in parallel")
+    parser.add_argument("--workers", type=int, default=default_workers(),
+                        help="Runs in parallel (default: one per GPU, so that no run waits for another)")
     args = parser.parse_args()
     if args.values and len(args.params) > 1:
         sys.exit("--values can only be used with a single parameter")

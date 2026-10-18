@@ -189,6 +189,11 @@ def _run_task(task):
     return key, result, cfg.device_type
 
 
+def default_workers() -> int:
+    """One worker per GPU (runs sharing a GPU only take longer each), or 4 on the CPU."""
+    return torch.cuda.device_count() or 4
+
+
 def yield_runs(func, tasks: list[tuple], max_workers: int = 4, warmup: bool = False):
     """Runs func(cfg, **kwargs) for every (key, cfg) or (key, cfg, kwargs) task in
     parallel processes and yields (key, result, device) as they finish.
@@ -197,9 +202,12 @@ def yield_runs(func, tasks: list[tuple], max_workers: int = 4, warmup: bool = Fa
     forked, so that each one can use CUDA, and the runs are spread over all the
     available GPUs. A run that does not fit in GPU memory is repeated on the
     CPU. The CPU cores are shared out among the workers, so that their thread
-    pools do not oversubscribe the machine. With several workers the measured
-    times are only indicative; with warmup, every process makes a throwaway
-    run before its first timed one.
+    pools do not oversubscribe the machine. With warmup, every process makes a
+    throwaway run before its first timed one.
+
+    Times: a single worker keeps every run on the same GPU, so that times are
+    comparable; with one worker per GPU no run waits for another; with more
+    workers than GPUs, runs share a GPU and their times grow accordingly.
     """
     num_gpus = torch.cuda.device_count()
     threads = max(1, (os.cpu_count() or 1) // max_workers)
@@ -212,7 +220,7 @@ def yield_runs(func, tasks: list[tuple], max_workers: int = 4, warmup: bool = Fa
             for i, task in enumerate(tasks):
                 key, cfg, kwargs = task if len(task) == 3 else (*task, {})
                 cfg = copy.deepcopy(cfg)
-                if cfg.device_type == "cuda" and num_gpus > 1:
+                if cfg.device_type == "cuda" and num_gpus > 1 and max_workers > 1:
                     cfg.device_type = f"cuda:{i % num_gpus}"
                 futures.append(executor.submit(_run_task, (func, key, cfg, kwargs, warmup, threads)))
             for future in as_completed(futures):
@@ -225,8 +233,8 @@ def yield_runs(func, tasks: list[tuple], max_workers: int = 4, warmup: bool = Fa
                 os.environ[v] = value
 
 
-def yield_scenario_runs(tasks: list[tuple], max_workers: int = 4):
+def yield_scenario_runs(tasks: list[tuple], max_workers: int = 4, warmup: bool = True):
     """yield_runs of run_scenario: yields (key, metrics, maps), with the device in the metrics."""
-    for key, (metrics, maps), device in yield_runs(run_scenario, tasks, max_workers):
+    for key, (metrics, maps), device in yield_runs(run_scenario, tasks, max_workers, warmup):
         metrics["device"] = device
         yield key, metrics, maps

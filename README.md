@@ -154,7 +154,7 @@ python scripts/tools/sweep.py --params iterations early_stopping_patience early_
 python scripts/tools/benchmark.py --set held_out                            # with the chosen values
 ```
 
-After each stage, the chosen values are set in `config.py` (or passed on the command line) before sweeping the next one. Runs are parallel (`--workers`), so the times they report are only indicative; use `--workers 1` to measure them.
+After each stage, the chosen values are set in `config.py` (or passed on the command line) before sweeping the next one. Runs are parallel, one per GPU by default, and warmed up, so the times they report are comparable to single runs; with more workers than GPUs, runs share a GPU and their times grow.
 
 ### Visualization
 
