@@ -43,8 +43,8 @@ class TrainParams:
     obstacle_lambda: float = 0.1 # Weight for the obstacle penalty term in the loss function
     obstacle_sigma_k: float = 1.0 # Margin kept between a Gaussian and an obstacle, in standard deviations along the evaluated direction
 
-    early_stopping_patience: int = 100      # How many iterations to wait for an improvement
-    early_stopping_min_delta: float = 1e-2  # Minimum relative improvement of the smoothed loss that resets the patience counter
+    early_stopping_patience: int = 50       # How many iterations to wait for an improvement
+    early_stopping_min_delta: float = 2e-2  # Minimum relative improvement of the smoothed loss that resets the patience counter
     ema_alpha: float = 0.6                  # Smoothing factor (Lower = smoother, more memory of past loss)
 
     do_eval: bool = field(default=False, action="store_true") # Evaluate model during training using ground truth
