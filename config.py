@@ -21,7 +21,7 @@ class SimulationParams:
     # --- GADEN scenarios (see utils/gaden_utils.py) ---
     scenario: Optional[str] = None # Scenario package directory. Overrides map/cell size. If None, a procedural map is generated
     num_poses: Optional[int] = None # Robot vantage poses. None: as many as the coverage target needs
-    angular_step: float = 2.0 # Angle between consecutive beams of the sweep at each pose (deg)
+    angular_step: float = 6.0 # Angle between consecutive beams of the sweep at each pose (deg)
     min_clearance: float = 0.3 # Minimum distance from a pose to any obstacle (m)
     max_range: float = 30.0 # Maximum beam length (m)
     min_crossing_angle: float = 30.0 # A free cell is covered once beams from two poses cross it at least this angle apart (deg)

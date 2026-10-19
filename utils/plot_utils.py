@@ -2,6 +2,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+from matplotlib.collections import LineCollection
 
 from config import Config
 from gs_model import GasSplattingModel
@@ -106,9 +107,13 @@ def plot_training_results(gaussians: GasSplattingModel, batch: MeasurementBatch,
     ax1 = fig.add_subplot(gs[0, 0])
     ax1.set_title(f"Ground Truth ({grid_w}x{grid_h})")
     im1 = ax1.imshow(ground_truth, origin='lower', extent=(0, map_w, 0, map_h), cmap='viridis', vmin=vmin, vmax=vmax)
-    for beam in batch.beams.cpu().numpy():
-        (x0, y0), (x1, y1) = beam[0], beam[1]
-        ax1.plot([x0, x1], [y0, y1], 'w-', alpha=0.3, linewidth=1.0)
+    # Fainter lines as beams get denser, so that a fine scan does not hide the map
+    beams = batch.beams.cpu().numpy()
+    alpha = float(np.clip(30.0 / max(len(beams), 1), 0.02, 0.3))
+    ax1.add_collection(LineCollection(beams, colors='w', linewidths=0.4, alpha=alpha))
+    if batch.pose_ids is not None:
+        poses = np.unique(beams[:, 0], axis=0)
+        ax1.scatter(poses[:, 0], poses[:, 1], marker='^', s=18, c='w', edgecolors='k', linewidths=0.5, zorder=3)
 
     # 2. Reconstruction (Top Center)
     ax2 = fig.add_subplot(gs[0, 1])

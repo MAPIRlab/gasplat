@@ -8,8 +8,13 @@ plots show, with the angular step on top. Procedural maps have no poses, so a
 growing number of beams (--beams) is taken from a fixed random order instead.
 Every method reconstructs each set of measurements from scratch.
 
-    python scripts/experiments/num_measurements.py --set simple --angular_steps 32 16 8 4 2 1
+    python scripts/experiments/num_measurements.py --set simple --angular_steps 32 16 8 4 2 1 --repeats 5
     python scripts/experiments/num_measurements.py --seeds 0 1 2 --beams 10 20 40 80 160
+
+--repeats N runs every GADEN case N times with seeds 0..N-1, which only change the
+starting heading of each sweep (the beams turn by up to one angular step; poses
+are fixed). Curves show the mean and a band of one standard deviation: the
+sensitivity of each method to where exactly the beams fall.
 
 Meant for simple environments (an empty room, a single obstacle), where the
 effect of the number of measurements is easiest to see.
@@ -57,6 +62,7 @@ def main():
                         help="Angular steps of the sweep at each pose (deg), for GADEN scenarios")
     parser.add_argument("--beams", nargs="+", type=int, default=None, help="Numbers of beams, for procedural maps")
     parser.add_argument("--methods", nargs="+", default=list(AVAILABLE_METHODS), choices=list(AVAILABLE_METHODS))
+    parser.add_argument("--repeats", type=int, default=1, help="Runs per GADEN case, with seeds 0..N-1 (sweep headings)")
     parser.add_argument("--workers", type=int, default=1, help="Runs in parallel (times become indicative)")
     args = parser.parse_args()
     cfg: Config = args.cfg
@@ -75,7 +81,16 @@ def main():
         cfg.sim.num_beams = max(steps)
     label = "procedural" if args.seeds else args.set
 
-    tasks = [((c.name, s), c.apply(cfg), {"step": s}) for c in cases for s in steps]
+    if procedural and args.repeats > 1:
+        sys.exit("--repeats applies to GADEN scenarios; procedural maps vary with --seeds")
+    repeats = list(range(args.repeats)) if args.repeats > 1 else [cfg.sim.seed]
+    tasks = []
+    for c in cases:
+        for r in repeats:
+            case_cfg = c.apply(cfg)
+            if not procedural:
+                case_cfg.sim.seed = r
+            tasks.extend(((c.name, s, r), case_cfg, {"step": s}) for s in steps)
     results = {}
     for key, result, _ in tqdm(yield_runs(functools.partial(run_step, methods=args.methods), tasks,
                                           args.workers, warmup=True), total=len(tasks), desc="Runs"):
@@ -84,25 +99,28 @@ def main():
     names = [c.name for c in cases]
     # Procedural seeds share the same numbers of beams and are averaged; GADEN scenarios are shown one by one
     panels = {"mean over seeds": names} if procedural else {n: [n] for n in names}
+    runs_of = lambda members, s: [results[(n, s, r)] for n in members for r in repeats]
     curves = {}
     for panel, members in panels.items():
-        beams = [float(np.mean([results[(n, s)]["beams"] for n in members])) for s in steps]
+        beams = [float(np.mean([x["beams"] for x in runs_of(members, s)])) for s in steps]
         curves[panel] = {"beams": beams}
         print(f"\n{panel}")
         print(f"  {'':18s}" + "".join(f"{b:>9.0f}" for b in beams) + "   (beams)")
         if not procedural:
             print(f"  {'':18s}" + "".join(f"{s:>8g}°" for s in steps) + "   (angular step)")
         for m in args.methods:
-            nrmse = [float(np.mean([results[(n, s)]["metrics"][m]["nrmse"] for n in members])) for s in steps]
-            time_s = [float(np.mean([results[(n, s)]["metrics"][m]["time"] for n in members])) for s in steps]
-            curves[panel][m] = {"nrmse": nrmse, "time": time_s}
-            print(f"  {m:18s}" + "".join(f"{100 * v:8.2f}%" for v in nrmse))
+            values = lambda key: [[x["metrics"][m][key] for x in runs_of(members, s)] for s in steps]
+            nrmse, time_s = values("nrmse"), values("time")
+            curves[panel][m] = {"nrmse": [float(np.mean(v)) for v in nrmse], "nrmse_std": [float(np.std(v)) for v in nrmse],
+                                "time": [float(np.mean(v)) for v in time_s], "time_std": [float(np.std(v)) for v in time_s]}
+            print(f"  {m:18s}" + "".join(f"{100 * np.mean(v):6.2f}±{100 * np.std(v):4.2f}" for v in nrmse))
 
     save_experiment_results(
         {"experiment_name": f"num_measurements_{label}", "cases": names, "steps": steps,
          "step_unit": "beams" if procedural else "angular step (deg)", "methods": args.methods,
          "config": dataclasses.asdict(cfg)},
-        {"runs": [{"case": n, "step": s, **results[(n, s)]} for n in names for s in steps], "curves": curves},
+        {"runs": [{"case": n, "step": s, "seed": r, **results[(n, s, r)]} for n in names for s in steps for r in repeats],
+         "curves": curves, "repeats": len(repeats)},
     )
 
     fig, axs = plt.subplots(2, len(panels), figsize=(7 * len(panels), 9), squeeze=False)
@@ -111,8 +129,10 @@ def main():
             style = AVAILABLE_METHODS[m]["style"]
             kw = dict(color=style["color"], marker=style["marker"], lw=style.get("linewidth", 1.5),
                       ms=style.get("markersize", 6), label=m)
-            axs[0, j].plot(curve["beams"], 100 * np.array(curve[m]["nrmse"]), **kw)
-            axs[1, j].plot(curve["beams"], curve[m]["time"], **kw)
+            for i, key, factor in [(0, "nrmse", 100), (1, "time", 1)]:
+                mean, std = factor * np.array(curve[m][key]), factor * np.array(curve[m][key + "_std"])
+                axs[i, j].plot(curve["beams"], mean, **kw)
+                axs[i, j].fill_between(curve["beams"], mean - std, mean + std, color=style["color"], alpha=0.15)
         for i, ylabel in enumerate(["NRMSE (% of peak)", "Reconstruction time (s)"]):
             ax = axs[i, j]
             ax.set_xscale("log")
