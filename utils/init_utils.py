@@ -1,3 +1,4 @@
+import time
 import torch
 from dataclasses import dataclass, field
 from typing import Any, Dict
@@ -55,9 +56,10 @@ def setup_gs_model(batch: MeasurementBatch, cfg: Config) -> tuple[GasSplattingMo
         cfg (Config): Configuration object with model and other parameters.
 
     Returns:
-        tuple[GasSplattingModel, InitializationData]: Initialized Gas Splatting model and the initialization data.
+        tuple[GasSplattingModel, InitializationData]: Initialized Gas Splatting model and the initialization data,
+        whose info["setup_time"] is the time this initialization took (s).
     """
-
+    t_start = time.time()
     init_data = injection_initialization(batch, cfg)
         
     initial_gaussians = init_data.pos.shape[0]
@@ -80,4 +82,7 @@ def setup_gs_model(batch: MeasurementBatch, cfg: Config) -> tuple[GasSplattingMo
             model.set_concentration_scale(batch_scale)
         init_data.pos = model.get_pos().detach().cpu()
 
+    if model._pos.is_cuda:
+        torch.cuda.synchronize(model._pos.device)  # GPU work is asynchronous; include it here
+    init_data.info["setup_time"] = time.time() - t_start
     return model, init_data

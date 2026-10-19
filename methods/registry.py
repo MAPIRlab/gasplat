@@ -50,16 +50,14 @@ def run_ltd(batch: MeasurementBatch, cfg: Config, system_matrix: csr_matrix, **k
     return res, recon_time
 
 def run_gas_splatting(batch: MeasurementBatch, cfg: Config, environment: EnvironmentContext | None = None, **kwargs):
-    t_start = time.time()
-    model, _ = setup_gs_model(batch, cfg)
-    gs_setup_time = time.time() - t_start
-
+    model, init_data = setup_gs_model(batch, cfg)
     trainer = Trainer(model, cfg, environment=environment)
     trainer.train(batch)
     results = trainer.finish()
     gs_img = model.render_map(cell_size=cfg.env.cell_size)
-    
-    return gs_img, gs_setup_time + results.training_time
+
+    # Setup and optimization time, as measured by the initialization and the trainer
+    return gs_img, init_data.info["setup_time"] + results.training_time
 
 AVAILABLE_METHODS = {
     "SART": {

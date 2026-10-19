@@ -54,6 +54,8 @@ class Trainer:
             self.visualizer = None
         if self.visualizer and self.ground_truth is not None:
             self.visualizer.set_ground_truth(self.ground_truth)
+        if self.visualizer and environment and environment.obstacles is not None:
+            self.visualizer.set_obstacles(environment.obstacles)
         self.results = TrainingResults()
         self.global_iteration = 0
 

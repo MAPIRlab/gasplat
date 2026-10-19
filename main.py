@@ -1,4 +1,3 @@
-import time
 from simple_parsing import ArgumentParser
 
 from config import Config
@@ -24,9 +23,8 @@ def main():
     batch, environment = generate_simulation_data(cfg)
 
     # --- Initialization ---
-    t0 = time.time()
     model, init_data = setup_gs_model(batch, cfg)
-    setup_time = time.time() - t0
+    setup_time = init_data.info["setup_time"]
     if not quiet: print(f"Model initialized with {model.num_gaussians} Gaussians in {setup_time:.3f}s")
 
     plot_initial_guess(environment.ground_truth.gas_map, init_data, cfg)

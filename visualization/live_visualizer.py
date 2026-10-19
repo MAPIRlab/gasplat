@@ -193,6 +193,10 @@ class LiveVisualizer:
         
         self.img_gt_item = pg.ImageItem()
         self.p_gt.addItem(self.img_gt_item)
+        # Obstacles drawn over the ground truth (gray, transparent elsewhere)
+        self.img_obstacles_item = pg.ImageItem()
+        self.img_obstacles_item.setZValue(1)
+        self.p_gt.addItem(self.img_obstacles_item)
 
         # Colormap for maps
         self.img_map_item.setColorMap(THEME['colormap'])
@@ -254,6 +258,13 @@ class LiveVisualizer:
             self.gt_levels = (float(ground_truth.min()), float(ground_truth.max()))
             self.img_gt_item.setLevels(self.gt_levels)
             self.img_map_item.setLevels(self.gt_levels)
+
+    def set_obstacles(self, obstacles: np.ndarray):
+        """Overlays the obstacle cells (H, W) on the ground truth panel."""
+        rgba = np.zeros(obstacles.shape + (4,), dtype=np.ubyte)
+        rgba[obstacles > 0.5] = (180, 180, 180, 255)
+        self.img_obstacles_item.setImage(rgba.transpose(1, 0, 2), levels=(0, 255))
+        self.img_obstacles_item.setRect(QtCore.QRectF(0, 0, self.map_size[0], self.map_size[1]))
 
     def update(self, iteration: int, loss_history: List[float], model: GasSplattingModel):
         """Extracts the latest parameters from the model, updates the UI components, and saves the frame state."""
