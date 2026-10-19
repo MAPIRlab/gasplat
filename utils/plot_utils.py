@@ -107,10 +107,10 @@ def plot_training_results(gaussians: GasSplattingModel, batch: MeasurementBatch,
     ax1 = fig.add_subplot(gs[0, 0])
     ax1.set_title(f"Ground Truth ({grid_w}x{grid_h})")
     im1 = ax1.imshow(ground_truth, origin='lower', extent=(0, map_w, 0, map_h), cmap='viridis', vmin=vmin, vmax=vmax)
-    # Fainter lines as beams get denser, so that a fine scan does not hide the map
+    # Fainter lines as beams get denser (1/sqrt(N)), so that a fine scan does not hide the map
     beams = batch.beams.cpu().numpy()
-    alpha = float(np.clip(30.0 / max(len(beams), 1), 0.02, 0.3))
-    ax1.add_collection(LineCollection(beams, colors='w', linewidths=0.4, alpha=alpha))
+    alpha = float(np.clip(4.0 / np.sqrt(max(len(beams), 1)), 0.08, 0.5))
+    ax1.add_collection(LineCollection(beams, colors='w', linewidths=0.5, alpha=alpha))
     if batch.pose_ids is not None:
         poses = np.unique(beams[:, 0], axis=0)
         ax1.scatter(poses[:, 0], poses[:, 1], marker='^', s=18, c='w', edgecolors='k', linewidths=0.5, zorder=3)
