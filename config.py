@@ -25,7 +25,7 @@ class SimulationParams:
     min_clearance: float = 0.3 # Minimum distance from a pose to any obstacle (m)
     max_range: float = 30.0 # Maximum beam length (m)
     min_crossing_angle: float = 30.0 # A free cell is covered once beams from two poses cross it at least this angle apart (deg)
-    coverage: float = 0.95 # Fraction of free cells to cover when num_poses is None
+    coverage: float = 0.8 # Fraction of free cells to cover when num_poses is None
     beam_fov: float = 360.0 # Angular sweep at each pose (deg)
 
 @dataclass

@@ -363,7 +363,7 @@ def visible_cells(origins: np.ndarray, obstacles: np.ndarray, cell_size: float,
 def select_vantage_poses(obstacles: np.ndarray, cell_size: float,
                          num_poses: int | None = None, min_clearance: float = 0.3,
                          max_range: float = 30.0, min_angle: float = 30.0,
-                         coverage: float = 0.95, spacing: float = 0.3) -> np.ndarray:
+                         coverage: float = 0.8, spacing: float = 0.3) -> np.ndarray:
     """Place robot poses so that the free space is seen from two directions.
 
     A beam integral only localizes gas along its own line, so a region is
@@ -377,12 +377,14 @@ def select_vantage_poses(obstacles: np.ndarray, cell_size: float,
     largest connected free region, so the poses depend on the map alone.
     Each step adds the candidate that increases
     sum_i level_i the most, where level_i is 0 for an unseen cell, 1 for a cell
-    seen from a single direction and 2 for a covered one, until a fraction
-    `coverage` of the free cells is covered (or no candidate improves it
-    further). If num_poses is None, selection stops there. A larger num_poses
-    goes on adding the candidate that sees the most cells along a line at least
+    seen from a single direction and 2 for a covered one. If num_poses is None,
+    selection stops once a fraction `coverage` of the free cells is covered (or
+    no candidate improves it further). Otherwise it takes the first num_poses
+    of a fixed order: the same steps until no candidate improves the coverage,
+    then the candidate that sees the most cells along a line at least
     `min_angle` from every line they are already seen along, so that each pose
-    adds the most new viewing directions; fewer poses are always a prefix.
+    adds the most new viewing directions. The poses for any coverage target or
+    smaller num_poses are a prefix of that order.
 
     Returns (P, 2) positions in meters.
     """
@@ -435,9 +437,9 @@ def select_vantage_poses(obstacles: np.ndarray, cell_size: float,
         level[seen & (level == 0)] = 1
         level[seen & crosses[best]] = 2
         crosses |= seen & far(best)
-        if (level == 2).sum() >= coverage * num_target:
+        if num_poses is None and (level == 2).sum() >= coverage * num_target:
             break
-    if num_poses is None:
+    if num_poses is None or len(chosen) == num_poses:
         return cand[chosen]
 
     # new[c, i]: candidate c sees cell i along a line at least min_angle from every chosen pose that sees it
@@ -489,7 +491,7 @@ def cached_vantage_poses(cache_dir: str, obstacles: np.ndarray, cell_size: float
 def generate_vantage_beams(obstacles: np.ndarray, cell_size: float, angular_step: float,
                            num_poses: int | None = None, poses: np.ndarray | None = None,
                            min_clearance: float = 0.3, max_range: float = 30.0,
-                           min_angle: float = 30.0, coverage: float = 0.95,
+                           min_angle: float = 30.0, coverage: float = 0.8,
                            min_length: float = 0.2, fov: float = 360.0,
                            rng: np.random.Generator | None = None):
     """Beams shot by a robot that stops at several poses and pans its TDLAS.
