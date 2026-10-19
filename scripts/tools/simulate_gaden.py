@@ -11,7 +11,14 @@ the grid-based baselines do not reconstruct on the very grid the data was
 generated on (the "inverse crime" of tomography).
 
     python scripts/tools/simulate_gaden.py ~/GADEN_files/test_env/scenarios/10x6_empty_room
-        [--config config1] [--simulation sim1] [--time 1000] [--height 0.85 | source] [--fine_factor 4]
+        [--config config1] [--simulation sim1 | --sim_dir gaden_sims/10x6_empty_room/center_plume]
+        [--time 1000 [300 ...]] [--height 0.85 | source] [--fine_factor 4]
+
+--sim_dir runs a simulation kept in this repo (gaden_sims/) instead of one of the
+scenario: a folder with its sim.yaml and, if it changes the environment
+configuration (e.g. still air), a config.yaml with the files it refers to. The
+folder name names the simulation. --time takes several snapshot times, written
+as separate packages from a single run.
 
 --height is the beam plane above the floor (m), or "source" for the layer that
 contains the gas source (the upper one if the source lies on a layer boundary).
@@ -48,15 +55,33 @@ def gaden_core_version() -> str:
         return "unknown"
 
 
-def simulate(scenario_dir: str, config: str, simulation: str, time_s: float, height: float | str,
-             fine_factor: int, root: str, crop_margin: int = 1) -> tuple[str, dict]:
+def install_sim_dir(work: str, config: str, sim_dir: str) -> tuple[str, str]:
+    """Copies a repo simulation into the working copy; returns its configuration and simulation names."""
+    simulation = os.path.basename(os.path.normpath(sim_dir))
+    if os.path.exists(os.path.join(sim_dir, "config.yaml")):
+        config = simulation
+        shutil.copytree(sim_dir, os.path.join(work, "environment_configurations", config),
+                        ignore=shutil.ignore_patterns("sim.yaml"))
+    target = os.path.join(work, "environment_configurations", config, "simulations", simulation)
+    os.makedirs(target, exist_ok=True)
+    shutil.copy(os.path.join(sim_dir, "sim.yaml"), target)
+    return config, simulation
+
+
+def simulate(scenario_dir: str, config: str, simulation: str, times_s: list[float], height: float | str,
+             fine_factor: int, root: str, sim_dir: str | None = None, crop_margin: int = 1) -> list[tuple[str, dict]]:
     from gaden_py import gaden
 
     scenario = os.path.basename(os.path.normpath(scenario_dir))
+    packages = []
     with tempfile.TemporaryDirectory() as tmp:
         work = os.path.join(tmp, scenario)
         shutil.copytree(scenario_dir, work)
+        if sim_dir:
+            config, simulation = install_sim_dir(work, config, sim_dir)
         config_dir = os.path.join(work, "environment_configurations", config)
+        with open(os.path.join(config_dir, "config.yaml")) as f:
+            config_yaml = f.read()
         with open(os.path.join(config_dir, "simulations", simulation, "sim.yaml")) as f:
             sim_yaml = f.read()
 
@@ -65,11 +90,8 @@ def simulate(scenario_dir: str, config: str, simulation: str, time_s: float, hei
         env_config = gaden.Preprocessing.Preprocess(metadata)
         params = metadata.GetSimulationParams(simulation)
         params.saveResults = False
-        params.expectedNumIterations = int(time_s / params.deltaTime) + 1
-
+        params.expectedNumIterations = int(max(times_s) / params.deltaTime) + 1
         sim = gaden.RunningSimulation(params, env_config)
-        while sim.GetCurrentTime() < time_s:
-            sim.AdvanceTimestep()
 
         # --- occupancy: same codes as VGR (0 free, 1 obstacle, 2 outlet) ---
         env = env_config.environment
@@ -98,6 +120,9 @@ def simulate(scenario_dir: str, config: str, simulation: str, time_s: float, hei
         layer = layer[lo[0]:hi[0], lo[1]:hi[1]]
         W, H = layer.shape
 
+        occupancy = np.ascontiguousarray(layer.T)
+        origin_world = env_min[:2] + lo * cs
+
         # --- concentration at the cell centers, and f x f samples per cell ---
         def sample(fine: int) -> np.ndarray:
             offsets = (np.arange(fine) + 0.5) / fine
@@ -114,45 +139,47 @@ def simulate(scenario_dir: str, config: str, simulation: str, time_s: float, hei
                                 gaden.Vector3(x0 + ox * cs, y0 + oy * cs, z))
             return out
 
-        gas_map, gas_map_fine = sample(1), sample(fine_factor)
-        num_filaments = int(sim.GetFilaments().size())
+        for time_s in sorted(times_s):
+            while sim.GetCurrentTime() < time_s:
+                sim.AdvanceTimestep()
+            gas_map, gas_map_fine = sample(1), sample(fine_factor)
+            name = f"{scenario.lower()}_{simulation}_h{z - floor:.2f}_t{time_s:.0f}"
+            meta = {
+                "name": name,
+                "generator": "gaden_core",
+                "gaden_core_commit": gaden_core_version(),
+                "scenario_dir": os.path.abspath(scenario_dir),
+                "scenario": scenario,
+                "configuration": config,
+                "simulation": simulation,
+                "sim_dir": os.path.relpath(sim_dir) if sim_dir else None,
+                "time_s": time_s,
+                "num_filaments": int(sim.GetFilaments().size()),
+                "cell_size": cs,
+                "fine_factor": fine_factor,
+                "map_size_m": [W * cs, H * cs],
+                "grid_shape_hw": [H, W],
+                "origin_world": origin_world.tolist(),
+                "layer_index": k,
+                "layer_center_z": z,
+                "height_above_floor": z - floor,
+                "source_world": source,
+                "source_local": [source[0] - origin_world[0], source[1] - origin_world[1]],
+                "sim_yaml": sim_yaml,
+                "config_yaml": config_yaml,
+                "units": "ppm (maps), ppm*m (beam integrals)",
+                "occupancy_codes": {"free": FREE, "obstacle": OBSTACLE, "outlet": OUTLET},
+            }
 
-    occupancy = np.ascontiguousarray(layer.T)
-    origin_world = env_min[:2] + lo * cs
-    name = f"{scenario.lower()}_{simulation}_h{z - floor:.2f}_t{time_s:.0f}"
-    meta = {
-        "name": name,
-        "generator": "gaden_core",
-        "gaden_core_commit": gaden_core_version(),
-        "scenario_dir": os.path.abspath(scenario_dir),
-        "scenario": scenario,
-        "configuration": config,
-        "simulation": simulation,
-        "time_s": time_s,
-        "num_filaments": num_filaments,
-        "cell_size": cs,
-        "fine_factor": fine_factor,
-        "map_size_m": [W * cs, H * cs],
-        "grid_shape_hw": [H, W],
-        "origin_world": origin_world.tolist(),
-        "layer_index": k,
-        "layer_center_z": z,
-        "height_above_floor": z - floor,
-        "source_world": source,
-        "source_local": [source[0] - origin_world[0], source[1] - origin_world[1]],
-        "sim_yaml": sim_yaml,
-        "units": "ppm (maps), ppm*m (beam integrals)",
-        "occupancy_codes": {"free": FREE, "obstacle": OBSTACLE, "outlet": OUTLET},
-    }
-
-    out_dir = os.path.join(root, name)
-    os.makedirs(out_dir, exist_ok=True)
-    np.savez_compressed(os.path.join(out_dir, "scenario.npz"), gas_map=gas_map, gas_map_fine=gas_map_fine,
-                        occupancy=occupancy)
-    with open(os.path.join(out_dir, "meta.json"), "w") as f:
-        json.dump(meta, f, indent=2)
-    save_preview(os.path.join(out_dir, "preview.png"), gas_map, occupancy, meta)
-    return out_dir, meta
+            out_dir = os.path.join(root, name)
+            os.makedirs(out_dir, exist_ok=True)
+            np.savez_compressed(os.path.join(out_dir, "scenario.npz"), gas_map=gas_map, gas_map_fine=gas_map_fine,
+                                occupancy=occupancy)
+            with open(os.path.join(out_dir, "meta.json"), "w") as f:
+                json.dump(meta, f, indent=2)
+            save_preview(os.path.join(out_dir, "preview.png"), gas_map, occupancy, meta)
+            packages.append((out_dir, meta))
+    return packages
 
 
 def main():
@@ -160,18 +187,19 @@ def main():
     parser.add_argument("scenario_dir", help="GADEN scenario folder (cad_models, wind_simulations, environment_configurations)")
     parser.add_argument("--config", default="config1", help="Environment configuration")
     parser.add_argument("--simulation", default="sim1", help="Simulation within the configuration")
-    parser.add_argument("--time", type=float, default=1000.0, help="Simulated time of the snapshot (s)")
+    parser.add_argument("--sim_dir", default=None, help="Simulation kept in this repo (gaden_sims/...), instead of --simulation")
+    parser.add_argument("--time", type=float, nargs="+", default=[1000.0], help="Simulated times of the snapshots (s)")
     parser.add_argument("--height", default="0.85", help='Beam plane above the floor (m), or "source"')
     parser.add_argument("--fine_factor", type=int, default=4, help="Samples per cell side of the fine map")
     parser.add_argument("--root", default=DEFAULT_ROOT, help="Directory for the scenario package")
     args = parser.parse_args()
 
     height = args.height if args.height == "source" else float(args.height)
-    out_dir, meta = simulate(args.scenario_dir, args.config, args.simulation, args.time, height,
-                             args.fine_factor, args.root)
-    print(f"Scenario written to {out_dir}")
-    print(json.dumps({k: meta[k] for k in ("grid_shape_hw", "map_size_m", "height_above_floor", "num_filaments",
-                                           "fine_factor", "gaden_core_commit")}, indent=2))
+    for out_dir, meta in simulate(args.scenario_dir, args.config, args.simulation, args.time, height,
+                                  args.fine_factor, args.root, args.sim_dir):
+        print(f"Scenario written to {out_dir}")
+        print(json.dumps({k: meta[k] for k in ("grid_shape_hw", "map_size_m", "height_above_floor", "num_filaments",
+                                               "fine_factor", "gaden_core_commit")}, indent=2))
 
 
 if __name__ == "__main__":
