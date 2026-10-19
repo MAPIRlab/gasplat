@@ -1,13 +1,17 @@
 """
 Reconstruction error of every method as the number of measurements grows.
 
-On GADEN scenarios the vantage poses stay fixed and the angular resolution of
-the sweep at each pose changes (--angular_steps, in degrees), as one would scan
-more finely with the same robot; the resulting number of beams is what the
-plots show, with the angular step on top. Procedural maps have no poses, so a
-growing number of beams (--beams) is taken from a fixed random order instead.
-Every method reconstructs each set of measurements from scratch.
+On GADEN scenarios the robot stops at a growing number of vantage poses
+(--poses), each with the same sweep (--sim.angular_step); every pose is the one
+that adds the most new viewing directions (see select_vantage_poses), so fewer
+poses are always a subset of more. Alternatively, the poses stay fixed and the
+angular resolution of the sweep changes (--angular_steps, in degrees), as one
+would scan more finely with the same robot. Plots show the number of poses or
+beams, with the other on top. Procedural maps have no poses, so a growing
+number of beams (--beams) is taken from a fixed random order instead. Every
+method reconstructs each set of measurements from scratch.
 
+    python scripts/experiments/num_measurements.py --set simple --poses 2 3 4 6 8 12 16 --repeats 5
     python scripts/experiments/num_measurements.py --set simple --angular_steps 32 16 8 4 2 1 --repeats 5
     python scripts/experiments/num_measurements.py --seeds 0 1 2 --beams 10 20 40 80 160
 
@@ -16,7 +20,7 @@ starting heading of each sweep (the beams turn by up to one angular step; poses
 are fixed). Curves show the mean and a band of one standard deviation: the
 sensitivity of each method to where exactly the beams fall.
 
-Meant for simple environments (an empty room, a single obstacle), where the
+Meant for a simple environment (the empty room with our own sources), where the
 effect of the number of measurements is easiest to see.
 """
 import os
@@ -39,9 +43,12 @@ from utils.plot_utils import set_publication_style
 from utils.experiment_utils import run_methods, save_experiment_results, yield_runs
 
 
-def run_step(cfg: Config, step: float, methods: list[str]) -> dict:
-    """One point of the curve: the angular step (GADEN) or the number of beams (procedural)."""
-    if cfg.sim.scenario:
+def run_step(cfg: Config, step: float, axis: str, methods: list[str]) -> dict:
+    """One point of the curve: the number of poses or the angular step (GADEN), or the number of beams (procedural)."""
+    if axis == "poses":
+        cfg.sim.num_poses = int(step)
+        batch, environment = generate_simulation_data(cfg)
+    elif axis == "angular_step":
         cfg.sim.angular_step = step
         batch, environment = generate_simulation_data(cfg)
     else:
@@ -58,8 +65,10 @@ def main():
     parser = ArgumentParser(description="Reconstruction error as the number of measurements grows")
     parser.add_arguments(Config, dest="cfg")
     add_case_arguments(parser, default_set="simple")
+    parser.add_argument("--poses", nargs="+", type=int, default=None,
+                        help="Numbers of vantage poses, for GADEN scenarios (sweep step: --sim.angular_step)")
     parser.add_argument("--angular_steps", nargs="+", type=float, default=None,
-                        help="Angular steps of the sweep at each pose (deg), for GADEN scenarios")
+                        help="Angular steps of the sweep at each pose (deg) with fixed poses, for GADEN scenarios")
     parser.add_argument("--beams", nargs="+", type=int, default=None, help="Numbers of beams, for procedural maps")
     parser.add_argument("--methods", nargs="+", default=list(AVAILABLE_METHODS), choices=list(AVAILABLE_METHODS))
     parser.add_argument("--repeats", type=int, default=1, help="Runs per GADEN case, with seeds 0..N-1 (sweep headings)")
@@ -73,13 +82,14 @@ def main():
 
     cases = get_cases(args.set, args.seeds)
     procedural = cases[0].scenario is None
-    steps = args.beams if procedural else args.angular_steps
-    if not steps:
-        sys.exit("Give --beams for procedural maps or --angular_steps for GADEN scenarios")
-    steps = sorted(steps, reverse=not procedural)   # fewest measurements first
+    axis = "beams" if procedural else ("poses" if args.poses else "angular_step")
+    steps = {"beams": args.beams, "poses": args.poses, "angular_step": args.angular_steps}[axis]
+    if not steps or (not procedural and args.poses and args.angular_steps):
+        sys.exit("Give --beams for procedural maps, or either --poses or --angular_steps for GADEN scenarios")
+    steps = sorted(steps, reverse=axis == "angular_step")   # fewest measurements first
     if procedural:
         cfg.sim.num_beams = max(steps)
-    label = "procedural" if args.seeds else args.set
+    label = "procedural" if args.seeds else f"{args.set}_{axis}"
 
     if procedural and args.repeats > 1:
         sys.exit("--repeats applies to GADEN scenarios; procedural maps vary with --seeds")
@@ -92,7 +102,7 @@ def main():
                 case_cfg.sim.seed = r
             tasks.extend(((c.name, s, r), case_cfg, {"step": s}) for s in steps)
     results = {}
-    for key, result, _ in tqdm(yield_runs(functools.partial(run_step, methods=args.methods), tasks,
+    for key, result, _ in tqdm(yield_runs(functools.partial(run_step, axis=axis, methods=args.methods), tasks,
                                           args.workers, warmup=True), total=len(tasks), desc="Runs"):
         results[key] = result
 
@@ -107,7 +117,8 @@ def main():
         print(f"\n{panel}")
         print(f"  {'':18s}" + "".join(f"{b:>9.0f}" for b in beams) + "   (beams)")
         if not procedural:
-            print(f"  {'':18s}" + "".join(f"{s:>8g}°" for s in steps) + "   (angular step)")
+            unit = "°" if axis == "angular_step" else " "
+            print(f"  {'':18s}" + "".join(f"{s:>8g}{unit}" for s in steps) + f"   ({axis.replace('_', ' ')})")
         for m in args.methods:
             values = lambda key: [[x["metrics"][m][key] for x in runs_of(members, s)] for s in steps]
             nrmse, time_s = values("nrmse"), values("time")
@@ -117,7 +128,8 @@ def main():
 
     save_experiment_results(
         {"experiment_name": f"num_measurements_{label}", "cases": names, "steps": steps,
-         "step_unit": "beams" if procedural else "angular step (deg)", "methods": args.methods,
+         "step_unit": {"beams": "beams", "poses": "poses", "angular_step": "angular step (deg)"}[axis],
+         "methods": args.methods,
          "config": dataclasses.asdict(cfg)},
         {"runs": [{"case": n, "step": s, "seed": r, **results[(n, s, r)]} for n in names for s in steps for r in repeats],
          "curves": curves, "repeats": len(repeats)},
@@ -125,29 +137,35 @@ def main():
 
     fig, axs = plt.subplots(2, len(panels), figsize=(7 * len(panels), 9), squeeze=False)
     for j, (panel, curve) in enumerate(curves.items()):
+        # x axis: number of poses on the pose axis, number of beams otherwise; the other one on top
+        x = [float(s) for s in steps] if axis == "poses" else curve["beams"]
         for m in args.methods:
             style = AVAILABLE_METHODS[m]["style"]
             kw = dict(color=style["color"], marker=style["marker"], lw=style.get("linewidth", 1.5),
                       ms=style.get("markersize", 6), label=m)
             for i, key, factor in [(0, "nrmse", 100), (1, "time", 1)]:
                 mean, std = factor * np.array(curve[m][key]), factor * np.array(curve[m][key + "_std"])
-                axs[i, j].plot(curve["beams"], mean, **kw)
-                axs[i, j].fill_between(curve["beams"], mean - std, mean + std, color=style["color"], alpha=0.15)
+                axs[i, j].plot(x, mean, **kw)
+                axs[i, j].fill_between(x, mean - std, mean + std, color=style["color"], alpha=0.15)
         for i, ylabel in enumerate(["NRMSE (% of peak)", "Reconstruction time (s)"]):
             ax = axs[i, j]
             ax.set_xscale("log")
-            ax.set_xticks(curve["beams"])
-            ax.set_xticklabels([f"{b:.0f}" for b in curve["beams"]])
+            ax.set_xticks(x)
+            ax.set_xticklabels([f"{v:.0f}" for v in x])
             ax.minorticks_off()
-            ax.set_xlabel("Number of beams")
+            ax.set_xlabel("Number of poses" if axis == "poses" else "Number of beams")
             ax.set_ylabel(ylabel)
             ax.grid(True, ls="--", alpha=0.3)
         title = panel.split("_h")[0]
         if not procedural:
             top = axs[0, j].secondary_xaxis("top")
-            top.set_xticks(curve["beams"])
-            top.set_xticklabels([f"{s:g}°" for s in steps])
-            top.set_xlabel("Angular step at each pose")
+            top.set_xticks(x)
+            if axis == "poses":
+                top.set_xticklabels([f"{b:.0f}" for b in curve["beams"]])
+                top.set_xlabel(f"Number of beams (one every {cfg.sim.angular_step:g}° at each pose)")
+            else:
+                top.set_xticklabels([f"{s:g}°" for s in steps])
+                top.set_xlabel("Angular step at each pose")
         axs[0, j].set_title(title)
     axs[0, 0].legend()
     fig.tight_layout()

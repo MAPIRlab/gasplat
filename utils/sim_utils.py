@@ -377,9 +377,12 @@ def select_vantage_poses(obstacles: np.ndarray, cell_size: float,
     largest connected free region, so the poses depend on the map alone.
     Each step adds the candidate that increases
     sum_i level_i the most, where level_i is 0 for an unseen cell, 1 for a cell
-    seen from a single direction and 2 for a covered one. Selection stops after
-    `num_poses` poses or, if num_poses is None, once a fraction `coverage` of the
-    free cells is covered (or no candidate improves it further).
+    seen from a single direction and 2 for a covered one, until a fraction
+    `coverage` of the free cells is covered (or no candidate improves it
+    further). If num_poses is None, selection stops there. A larger num_poses
+    goes on adding the candidate that sees the most cells along a line at least
+    `min_angle` from every line they are already seen along, so that each pose
+    adds the most new viewing directions; fewer poses are always a prefix.
 
     Returns (P, 2) positions in meters.
     """
@@ -417,22 +420,37 @@ def select_vantage_poses(obstacles: np.ndarray, cell_size: float,
     crosses = np.zeros_like(vis)
     chosen = []
     num_target = int(target.sum())
+
+    def far(p):   # lines from candidates to each cell at least min_angle from the line from pose p
+        diff = np.abs(bearing - bearing[p])
+        return np.minimum(diff, np.pi - diff) >= min_angle
+
     while num_poses is None or len(chosen) < num_poses:
         gain = (vis & (level == 0)).sum(axis=1) + (vis & crosses & (level == 1)).sum(axis=1)
         best = int(np.argmax(gain))
         if gain[best] == 0:
-            if num_poses is not None:
-                raise ValueError(f"Only {len(chosen)} poses improve the coverage, "
-                                 f"{num_poses} requested.")
             break
         chosen.append(best)
         seen = vis[best]
         level[seen & (level == 0)] = 1
         level[seen & crosses[best]] = 2
-        diff = np.abs(bearing - bearing[best])
-        crosses |= seen & (np.minimum(diff, np.pi - diff) >= min_angle)
-        if num_poses is None and (level == 2).sum() >= coverage * num_target:
+        crosses |= seen & far(best)
+        if (level == 2).sum() >= coverage * num_target:
             break
+    if num_poses is None:
+        return cand[chosen]
+
+    # new[c, i]: candidate c sees cell i along a line at least min_angle from every chosen pose that sees it
+    new = vis.copy()
+    for p in chosen:
+        new &= ~vis[p] | far(p)
+    while len(chosen) < num_poses:
+        gain = new.sum(axis=1)
+        best = int(np.argmax(gain))
+        if gain[best] == 0:
+            raise ValueError(f"Only {len(chosen)} poses add viewing directions, {num_poses} requested.")
+        chosen.append(best)
+        new &= ~vis[best] | far(best)
     return cand[chosen]
 
 
