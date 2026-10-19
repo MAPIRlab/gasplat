@@ -47,11 +47,12 @@ HELD_OUT = [
     ("House28", "8-1,3_slow"),        # broad spread from the source room
 ]
 
-# GADEN test environments (10 x 6 m rooms), simulated with gaden_core by
-# scripts/tools/simulate_gaden.py, for the experiment on the number of measurements
+# GADEN's empty test room (10 x 6 m) with our own sources (gaden_sims/10x6_empty_room), simulated with
+# gaden_core by scripts/tools/simulate_gaden.py, for the experiment on the number of measurements.
+# Beam plane through the point source (z = 0.75)
 SIMPLE = [
-    "10x6_empty_room_sim1_h0.75_t1000",       # beam plane through the line source (z = 0.7)
-    "10x6_central_obstacle_sim1_h0.55_t1000",  # beam plane through the point source (z = 0.5)
+    "10x6_empty_room_side_plume_h0.75_t1000",     # source in the inflow by the left door: plume across the room
+    "10x6_empty_room_center_plume_h0.75_t1000",   # source in the still center: compact blob with a faint plume
 ]
 
 PROCEDURAL_SEEDS = list(range(10))
