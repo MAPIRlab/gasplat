@@ -81,12 +81,13 @@ def load_progress(path: str) -> dict:
 
 
 def summarize(param: str, values: list, runs: dict, scenarios: list[str]):
-    print(f"\n{param:>20s} {'NRMSE %':>9s} {'worst %':>9s} {'peak':>7s} {'leak %':>7s} {'gauss':>7s} {'time s':>7s}")
+    print(f"\n{param:>20s} {'NRMSE %':>9s} {'worst %':>9s} {'peak':>7s} {'leak %':>7s} {'gauss':>7s} {'iters':>6s} {'time s':>7s}")
     for v in values:
         rows = [runs[(v, s)] for s in scenarios]
         mean = lambda k: np.mean([r[k] for r in rows])
         print(f"{v:>20g} {100 * mean('nrmse'):9.2f} {100 * max(r['nrmse'] for r in rows):9.2f} "
-              f"{mean('peak_ratio'):7.2f} {100 * mean('leak'):7.2f} {mean('gaussians'):7.1f} {mean('time'):7.1f}")
+              f"{mean('peak_ratio'):7.2f} {100 * mean('leak'):7.2f} {mean('gaussians'):7.1f} {mean('iterations'):6.0f} "
+              f"{mean('time'):7.1f}")
 
 
 def main():
