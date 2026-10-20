@@ -285,11 +285,12 @@ class Trainer:
         return num_injected
 
     def update_concentration_scale(self, batch_data: MeasurementBatch):
-        """Raises the concentration scale when a batch exceeds it by scale_update_factor.
-        It never decreases, since earlier batches stay in the buffer."""
+        """Raises the concentration scale when a batch exceeds it, so that it stays the largest
+        path-averaged concentration measured so far. It never decreases, since earlier batches
+        stay in the buffer."""
         batch_scale = estimate_concentration_scale(batch_data.beams, batch_data.measurements)
         current = self.model.concentration_scale
-        if batch_scale <= 0 or (current is not None and batch_scale <= self.cfg.train.scale_update_factor * current):
+        if batch_scale <= 0 or (current is not None and batch_scale <= current):
             return
 
         self.model.set_concentration_scale(batch_scale)

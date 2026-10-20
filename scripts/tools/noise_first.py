@@ -5,7 +5,7 @@ scale is first estimated from noise, far below the plume, and has to be raised
 when the gas is found.
 
 Three runs on the same measurements are compared:
-  - incremental, raising the scale when needed (train.scale_update_factor),
+  - incremental, raising the scale when a batch exceeds it,
   - incremental with the scale fixed by the first batch (no update),
   - every batch at once, as a reference.
 Raising the scale should end close to the reference, while a fixed scale
@@ -18,7 +18,6 @@ always added (absolute noise_floor plus the relative snr_db).
 """
 import os
 import sys
-import copy
 import json
 import numpy as np
 import torch
@@ -48,13 +47,16 @@ def split_by_distance(batch: MeasurementBatch, source: np.ndarray, num_batches: 
     return batches
 
 
-def run(batches: list[MeasurementBatch], environment, cfg: Config) -> list[dict]:
-    """Trains on the batches in order and evaluates the model after each one."""
+def run(batches: list[MeasurementBatch], environment, cfg: Config, fixed_scale: bool = False) -> list[dict]:
+    """Trains on the batches in order and evaluates the model after each one.
+    fixed_scale keeps the concentration scale set by the first batch."""
     model, trainer, history = None, None, []
     for b in batches:
         if model is None:
             model, _ = setup_gs_model(b, cfg)
             trainer = Trainer(model, cfg, environment=environment)
+            if fixed_scale:
+                trainer.update_concentration_scale = lambda batch: None
         trainer.train(b)
         pred = model.render_map(cfg.env.cell_size)
         metrics = gas_map_metrics(environment.ground_truth.gas_map, pred, environment.obstacles)
@@ -84,11 +86,9 @@ def main():
         source = np.array(json.load(f)["source_local"])
     batches = split_by_distance(batch, source, args.num_batches)
 
-    fixed_cfg = copy.deepcopy(cfg)
-    fixed_cfg.train.scale_update_factor = float("inf")
     runs = {
-        f"incremental, scale raised (x{cfg.train.scale_update_factor:g})": run(batches, environment, cfg),
-        "incremental, scale fixed by batch 1": run(batches, environment, fixed_cfg),
+        "incremental, scale raised": run(batches, environment, cfg),
+        "incremental, scale fixed by batch 1": run(batches, environment, cfg, fixed_scale=True),
     }
     reference = run([batch], environment, cfg)[0]
 
