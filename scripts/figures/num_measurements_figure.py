@@ -2,7 +2,7 @@
 
 Top row: the scenario and two reconstructions from the same measurements at one
 number of poses (--poses, default 4): (a) the ground truth with the poses and
-their beams, (b) GASPLAT, (c) the strongest baseline (--baseline, default LFD).
+their beams (faint, so that the ground truth stays visible), (b) GASPLAT, (c) the strongest baseline (--baseline, default LFD).
 Bottom row: (d) NRMSE and (e) computation time of every method over the number of
 poses, read from the results of scripts/experiments/num_measurements.py (mean and one
 standard deviation over the sweep headings). The time of a grid method
@@ -50,6 +50,8 @@ SCENARIO = "10x6_empty_room_side_plume_h0.75_t1000"
 GAS_CMAP = LinearSegmentedColormap.from_list(
     "gas", [(0.0, (1, 1, 1, 1)), (0.05, (1, 0.97, 0.55, 1)), (0.5, (0.98, 0.82, 0.15, 1)), (1.0, (0.90, 0.45, 0.05, 1))])
 WALL_GREY = "0.6"
+BEAM_COLOR = "0.55"    # beams of the ground-truth panel: light and faint, so that the plume stays visible
+BEAM_ALPHA = 0.15
 NAMES = {"Gas Splatting": r"\method", "RBF Coupled SART": "RBF-SART"}   # labels used in the paper
 ORDER = ["SART", "RBF Coupled SART", "LFD", "LTD", "Gas Splatting"]
 
@@ -127,8 +129,7 @@ def main():
     bottom_row = grid[1].subgridspec(1, 3, wspace=0.42, width_ratios=[1, 1, 0.55])
     maps = [fig.add_subplot(top_row[0, j]) for j in range(3)]
     draw_map(maps[0], gt, obstacles, extent, vmax, f"(a) Ground truth, {args.poses} poses")
-    alpha = float(np.clip(8.0 / np.sqrt(max(len(beams), 1)), 0.15, 0.6))
-    maps[0].add_collection(LineCollection(beams, colors="0.35", linewidths=0.4, alpha=alpha))
+    maps[0].add_collection(LineCollection(beams, colors=BEAM_COLOR, linewidths=0.3, alpha=BEAM_ALPHA))
     maps[0].scatter(poses[:, 0], poses[:, 1], marker="^", s=28, c="w", edgecolors="k", linewidths=0.6, zorder=3)
     for ax, (m, letter) in zip(maps[1:], (("Gas Splatting", "b"), (args.baseline, "c"))):
         draw_map(ax, preds[m], obstacles, extent, vmax, f"({letter}) {label(m)}, NRMSE {100 * metrics[m]['nrmse']:.1f}%")

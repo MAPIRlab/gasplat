@@ -12,9 +12,11 @@
             GASPLAT and LFD, from the same measurements (seed 0). Maps are cropped,
             with the same rule in every panel, to the region where the true or a
             reconstructed concentration exceeds a small share of the true peak.
+  corridor: House07's top corridor, from the same seed, one map per row: the ground
+            truth with the beams that enter the corridor, GASPLAT and LFD.
 
     python scripts/experiments/compare_methods.py --set held_out --repeats 5 --workers 1
-    python scripts/figures/compare_methods_figure.py [--results ...] [--houses house16 house27] [--copy_to ~/paper/figs]
+    python scripts/figures/compare_methods_figure.py [--results ...] [--houses house03 house27] [--copy_to ~/paper/figs]
 """
 import os
 import sys
@@ -56,6 +58,8 @@ METRICS = [("nrmse", 100, "NRMSE (%)"), ("peak_error", 100, "Peak error (%)"),
 GAS_CMAP = LinearSegmentedColormap.from_list(
     "gas", [(0.0, (1, 1, 1, 1)), (0.05, (1, 0.97, 0.55, 1)), (0.5, (0.98, 0.82, 0.15, 1)), (1.0, (0.90, 0.45, 0.05, 1))])
 WALL_GREY = "0.6"
+BEAM_COLOR = "0.55"    # beams of the ground-truth panels, as in the figure of the number of poses
+BEAM_ALPHA = 0.15
 CROP_LEVEL = 0.02   # share of the true peak above which a cell counts as holding gas, for the crop
 CROP_PAD = 0.5      # m around that region
 
@@ -208,8 +212,7 @@ def examples_figure(houses, baseline, seed, out):
             ax.imshow(np.where(obs, 1.0, np.nan), origin="lower", extent=extent, cmap=ListedColormap([WALL_GREY]),
                       interpolation="nearest")
             if j == 0:
-                alpha = float(np.clip(8.0 / np.sqrt(len(r["beams"])), 0.1, 0.6))
-                ax.add_collection(LineCollection(r["beams"], colors="0.35", linewidths=0.35, alpha=alpha))
+                ax.add_collection(LineCollection(r["beams"], colors=BEAM_COLOR, linewidths=0.3, alpha=BEAM_ALPHA))
                 ax.scatter(r["poses"][:, 0], r["poses"][:, 1], marker="^", s=24, c="w", edgecolors="k", linewidths=0.6, zorder=3)
             ax.set_xlim(extent[0], extent[1]); ax.set_ylim(extent[2], extent[3])
             ax.set_xticks([]); ax.set_yticks([])
@@ -224,10 +227,69 @@ def examples_figure(houses, baseline, seed, out):
     plt.close(fig)
 
 
+# House07's top corridor (m), where most of GASPLAT's error lies: its extent, and the part of the house shown
+# (with the rooms below, so that the beams entering through its doors show)
+CORRIDOR_HOUSE = "house07"
+CORRIDOR_X = (6.0, 16.7)
+CORRIDOR_Y = (3.7, 4.3)
+CORRIDOR_VIEW = (5.6, 17.2, 2.6, 4.4)
+
+
+def corridor_figure(baseline, seed, out):
+    """Single-column figure of House07's corridor, one map per row: (a) the ground truth with
+    the beams that enter the corridor, (b) GASPLAT, (c) the baseline. The color scale ends at
+    the highest value in the view."""
+    scenario = next(d for d in scenario_dirs("held_out") if os.path.basename(d).startswith(CORRIDOR_HOUSE))
+    cfg = Config(EnvironmentParams(), SimulationParams(), TrainParams(), DensificationParams())
+    cfg.sim.scenario, cfg.sim.seed, cfg.quiet = scenario, seed, True
+    batch, environment = generate_simulation_data(cfg)
+    metrics, preds = run_methods(batch, environment, cfg, ["Gas Splatting", baseline])
+    gt, obstacles, c = environment.ground_truth.gas_map, environment.obstacles > 0.5, cfg.env.cell_size
+
+    X0, X1, Y0, Y1 = CORRIDOR_VIEW
+    i0, i1, j0, j1 = round(X0 / c), round(X1 / c), round(Y0 / c), round(Y1 / c)
+    crop = lambda a: a[j0:j1, i0:i1]
+    extent = (X0, X1, Y0, Y1)
+    # Beams with a point inside the corridor
+    beams = batch.beams.cpu().numpy()
+    t = np.linspace(0, 1, 2000)[None, :, None]
+    points = beams[:, :1] + t * (beams[:, 1:] - beams[:, :1])
+    inside = ((points[..., 1] > CORRIDOR_Y[0]) & (points[..., 1] < CORRIDOR_Y[1])
+              & (points[..., 0] > CORRIDOR_X[0]) & (points[..., 0] < CORRIDOR_X[1])).any(axis=1)
+
+    panels = [(gt, "(a) Ground truth"),
+              (preds["Gas Splatting"], f"(b) GASPLAT, NRMSE {100 * metrics['Gas Splatting']['nrmse']:.1f}%"),
+              (preds[baseline], f"(c) {label(baseline)}, NRMSE {100 * metrics[baseline]['nrmse']:.1f}%")]
+    free = ~crop(obstacles)
+    vmax = max(crop(img)[free].max() for img, _ in panels)
+    ratio = (Y1 - Y0) / (X1 - X0)
+    fig = plt.figure(figsize=(3.5, 3 * 3.3 * ratio + 0.55))
+    grid = fig.add_gridspec(3, 2, width_ratios=[1, 0.025], wspace=0.03, hspace=0.32)
+    for i, (img, title) in enumerate(panels):
+        ax = fig.add_subplot(grid[i, 0])
+        ax.imshow(np.where(~free, np.nan, crop(img)), origin="lower", extent=extent, cmap=GAS_CMAP, vmin=0, vmax=vmax,
+                  interpolation="bilinear")
+        ax.imshow(np.where(~free, 1.0, np.nan), origin="lower", extent=extent, cmap=ListedColormap([WALL_GREY]),
+                  interpolation="nearest")
+        if i == 0:
+            ax.add_collection(LineCollection(beams[inside], colors="k", linewidths=0.5, alpha=0.8))
+        ax.set_xlim(X0, X1); ax.set_ylim(Y0, Y1)
+        ax.set_xticks([]); ax.set_yticks([])
+        for side in ax.spines.values():
+            side.set_visible(False)
+        ax.set_title(title, pad=2.5)
+    cbar = fig.colorbar(plt.cm.ScalarMappable(cmap=GAS_CMAP, norm=plt.Normalize(0, vmax)), cax=fig.add_subplot(grid[:, 1]))
+    cbar.set_label("ppm")
+    for ext in ("pdf", "png"):
+        fig.savefig(f"{out}.{ext}", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"{CORRIDOR_HOUSE} corridor: {inside.sum()} beams enter it")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Figures of the comparison on the held-out houses")
     parser.add_argument("--results", default=None, help="Results of compare_methods.py (default: the latest held-out run)")
-    parser.add_argument("--houses", nargs="+", default=["house16", "house27"], help="Houses of the examples figure")
+    parser.add_argument("--houses", nargs="+", default=["house03", "house27"], help="Houses of the examples figure")
     parser.add_argument("--baseline", default="LFD", choices=[m for m in AVAILABLE_METHODS if m != "Gas Splatting"])
     parser.add_argument("--seed", type=int, default=0, help="Sweep headings of the example reconstructions")
     parser.add_argument("--copy_to", default=None, help="Also copy the PDFs here (e.g. the paper's figs folder)")
@@ -238,13 +300,13 @@ def main():
     metrics_figure(path, "plots/compare_methods_metrics")
     nrmse_table(path, "plots/compare_methods_table.tex")
     examples_figure(args.houses, args.baseline, args.seed, "plots/compare_methods_examples")
+    corridor_figure(args.baseline, args.seed, "plots/compare_methods_corridor")
     if args.copy_to:
         os.makedirs(os.path.expanduser(args.copy_to), exist_ok=True)
-        for name in ("compare_methods_metrics", "compare_methods_examples"):
+        for name in ("compare_methods_metrics", "compare_methods_examples", "compare_methods_corridor"):
             shutil.copy(f"plots/{name}.pdf", os.path.expanduser(args.copy_to))
     print("results:", path)
-    print("Saved plots/compare_methods_metrics.{pdf,png}, plots/compare_methods_examples.{pdf,png} "
-          "and plots/compare_methods_table.tex")
+    print("Saved plots/compare_methods_{metrics,examples,corridor}.{pdf,png} and plots/compare_methods_table.tex")
 
 
 if __name__ == "__main__":
