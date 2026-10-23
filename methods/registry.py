@@ -51,13 +51,17 @@ def run_ltd(batch: MeasurementBatch, cfg: Config, system_matrix: csr_matrix, **k
 
 def run_gas_splatting(batch: MeasurementBatch, cfg: Config, environment: EnvironmentContext | None = None, **kwargs):
     model, init_data = setup_gs_model(batch, cfg)
+    # The trainer precomputes the distance fields of the obstacle penalty; timed like the
+    # system matrix of the grid methods
+    t0 = time.time()
     trainer = Trainer(model, cfg, environment=environment)
+    trainer_setup_time = time.time() - t0
     trainer.train(batch)
     results = trainer.finish()
     gs_img = model.render_map(cell_size=cfg.env.cell_size)
 
     # Setup and optimization time, as measured by the initialization and the trainer
-    return gs_img, init_data.info["setup_time"] + results.training_time
+    return gs_img, init_data.info["setup_time"] + trainer_setup_time + results.training_time
 
 AVAILABLE_METHODS = {
     "SART": {

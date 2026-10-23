@@ -112,11 +112,13 @@ def run_scenario(cfg: Config) -> tuple[dict, dict]:
     batch, environment = generate_simulation_data(cfg)
 
     model, init_data = setup_gs_model(batch, cfg)
-    trainer = Trainer(model, cfg, environment=environment)
+    t0 = time.time()
+    trainer = Trainer(model, cfg, environment=environment)   # precomputes the distance fields
+    trainer_setup_time = time.time() - t0
     trainer.train(batch)
     training = trainer.finish()
     # Setup and optimization time, as measured by the initialization and the trainer
-    fit_time = init_data.info["setup_time"] + training.training_time
+    fit_time = init_data.info["setup_time"] + trainer_setup_time + training.training_time
 
     pred = model.render_map(cell_size=cfg.env.cell_size)
     metrics = gas_map_metrics(environment.ground_truth.gas_map, pred, environment.obstacles, cfg.env.cell_size)
