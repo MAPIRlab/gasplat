@@ -6,6 +6,8 @@
             scripts/experiments/compare_methods.py (a house counts with the mean
             over its sweep headings; signed errors in absolute value; times of the
             grid methods include the system matrix).
+  table:    the NRMSE per house as a LaTeX tabular, with the best and second best value
+            of each row highlighted and the header of GASPLAT in bold.
   examples: two houses, one per row: the ground truth with the poses and beams,
             GASPLAT and LFD, from the same measurements (seed 0). Maps are cropped,
             with the same rule in every panel, to the region where the true or a
@@ -96,6 +98,69 @@ def metrics_figure(path, out):
     plt.close(fig)
 
 
+# Table colors, as few as possible: the best value of each row green (and bold), the second best
+# light green; the column of GASPLAT is marked by its bold header
+BEST_RGB = (125, 200, 145)
+SECOND_RGB = (205, 236, 212)
+
+
+def nrmse_table(path, out):
+    """LaTeX table of the NRMSE per house (needs \\usepackage{colortbl}), with a preview of its
+    colors (out with .png)."""
+    data = json.load(open(path))
+    per_case = data["results"]["per_case"]
+    methods = [m for m in ORDER if m in data["metadata"]["methods"]]
+    ours = methods.index("Gas Splatting")
+
+    def colors(values):
+        order = np.argsort(values)
+        rgb = [None] * len(values)
+        rgb[order[0]], rgb[order[1]] = BEST_RGB, SECOND_RGB
+        return rgb
+
+    def row(values):
+        cells = []
+        for j, (x, rgb) in enumerate(zip(values, colors(values))):
+            text = f"{x:.2f}"
+            if x == min(values):
+                text = "\\textbf{" + text + "}"
+            if rgb is not None:
+                text = f"\\cellcolor[RGB]{{{rgb[0]},{rgb[1]},{rgb[2]}}}" + text
+            cells.append(text)
+        return " & ".join(cells)
+
+    names = [label(m).replace("GASPLAT", "\\method") for m in methods]
+    names[ours] = "\\textbf{" + names[ours] + "}"
+    rows = [(h[5:7], [100 * per_case[h][m]["nrmse"] for m in methods]) for h in per_case]
+    summary = [(name, [100 * f([per_case[h][m]["nrmse"] for h in per_case]) for m in methods])
+               for name, f in (("Mean", np.mean), ("Median", np.median))]
+    lines = ["\\setlength{\\tabcolsep}{4pt}", "\\begin{tabular}{@{}l" + "r" * len(methods) + "@{}}", "\\hline",
+             "House & " + " & ".join(names) + " \\\\", "\\hline"]
+    lines += [f"{a} & " + row(v) + " \\\\" for a, v in rows]
+    lines.append("\\hline")
+    lines += [f"{a} & " + row(v) + " \\\\" for a, v in summary]
+    lines += ["\\hline", "\\end{tabular}"]
+    with open(out, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+    # Preview of the colors (LaTeX renders the real table)
+    table = rows + summary
+    rgb = lambda c: "white" if c is None else tuple(np.array(c) / 255)
+    fig, ax = plt.subplots(figsize=(3.6, 0.26 * (len(table) + 1)))
+    ax.axis("off")
+    t = ax.table(cellText=[[a] + [f"{x:.2f}" for x in v] for a, v in table],
+                 cellColours=[["white"] + [rgb(c) for c in colors(v)] for _, v in table],
+                 colLabels=["House"] + [label(m) for m in methods],
+                 loc="center", cellLoc="right")
+    t.auto_set_font_size(False); t.set_fontsize(8.5); t.scale(1, 1.15)
+    for (r, c), cell in t.get_celld().items():
+        cell.set_edgecolor("0.85")
+        if (r == 0 and c == ours + 1) or (r > 0 and c >= 1 and cell.get_text().get_text() == f"{min(table[r - 1][1]):.2f}"):
+            cell.get_text().set_fontweight("bold")
+    fig.savefig(out.replace(".tex", ".png"), dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
 def crop_box(masks, cell, shape):
     ys, xs = np.nonzero(np.logical_or.reduce(masks))
     H, W = shape
@@ -171,13 +236,15 @@ def main():
     os.makedirs("plots", exist_ok=True)
     path = args.results or latest_results()
     metrics_figure(path, "plots/compare_methods_metrics")
+    nrmse_table(path, "plots/compare_methods_table.tex")
     examples_figure(args.houses, args.baseline, args.seed, "plots/compare_methods_examples")
     if args.copy_to:
         os.makedirs(os.path.expanduser(args.copy_to), exist_ok=True)
         for name in ("compare_methods_metrics", "compare_methods_examples"):
             shutil.copy(f"plots/{name}.pdf", os.path.expanduser(args.copy_to))
     print("results:", path)
-    print("Saved plots/compare_methods_metrics.{pdf,png} and plots/compare_methods_examples.{pdf,png}")
+    print("Saved plots/compare_methods_metrics.{pdf,png}, plots/compare_methods_examples.{pdf,png} "
+          "and plots/compare_methods_table.tex")
 
 
 if __name__ == "__main__":
