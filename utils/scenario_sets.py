@@ -58,7 +58,7 @@ SIMPLE = [
 PROCEDURAL_SEEDS = list(range(10))
 
 SETS = {"tuning": TUNING, "held_out": HELD_OUT, "all": TUNING + HELD_OUT, "simple": SIMPLE,
-        "procedural": PROCEDURAL_SEEDS}
+        "side_plume": SIMPLE[:1], "procedural": PROCEDURAL_SEEDS}
 
 
 def scenario_dirs(set_name: str, root: str = DEFAULT_ROOT) -> list[str]:
@@ -99,7 +99,7 @@ def get_cases(set_name: str | None = None, seeds: list[int] | None = None, root:
     cases = [Case(os.path.basename(d), scenario=d) for d in scenario_dirs(set_name, root)]
     missing = [c.name for c in cases if not os.path.exists(os.path.join(c.scenario, "scenario.npz"))]
     if missing:
-        tool = "simulate_gaden.py" if set_name == "simple" else "make_scenarios.py"
+        tool = "simulate_gaden.py" if set_name in ("simple", "side_plume") else "make_scenarios.py"
         raise SystemExit(f"Missing scenarios: {', '.join(missing)}. Create them with scripts/tools/{tool}")
     return cases
 
