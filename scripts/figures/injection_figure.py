@@ -31,15 +31,14 @@ from utils.densification_utils import extract_candidate_positions
 from utils.obstacle_utils import add_rectangle, obstacle_mask_to_geometry
 from utils.sim_utils import MeasurementBatch, EnvironmentContext, GroundTruth, simulate_gas_integrals
 
-# Computer Modern, the default LaTeX font, shipped with matplotlib so no TeX install is needed
+# STIX (Times-like), shipped with matplotlib: heavier strokes than Computer Modern at the printed size
 plt.rcParams.update({
-    "font.family": "serif",
-    "font.serif": ["cmr10"],
-    "mathtext.fontset": "cm",
+    "font.family": "STIXGeneral",
+    "mathtext.fontset": "stix",
     "axes.formatter.use_mathtext": True,
     "axes.unicode_minus": False,
-    "font.size": 7.5,
-    "axes.titlesize": 8,
+    "font.size": 8.5,
+    "axes.titlesize": 9,
 })
 
 MAP_SIZE = (12.0, 7.0)
@@ -334,14 +333,14 @@ def main():
     model_coverage(ax[5], model, level)
 
     fig.legend(handles=[
-        Line2D([], [], color=C_OFF, lw=1.0, label="beams in the buffer"),
+        Line2D([], [], color=C_OFF, lw=1.0, label="beams of previous batches"),
         Line2D([], [], color=C_NEW, lw=1.0, label="arriving batch"),
         Line2D([], [], color=C_MODEL, lw=0.8, ls="--", label="field explained by the model"),
         Line2D([], [], color=C_MODEL, marker=".", ls="", ms=4, label="primitive centers"),
         Line2D([], [], color=C_CAND, lw=1.0, label="selected beams"),
         Line2D([], [], color="k", marker="s", ls="", ms=2.6, label="emitter"),
     ], loc="outside lower center", ncol=6, frameon=False, handlelength=1.3,
-        handletextpad=0.5, columnspacing=1.3, fontsize=7.5)
+        handletextpad=0.5, columnspacing=1.3, fontsize=8.5)
 
     os.makedirs("plots", exist_ok=True)
     fig.savefig("plots/injection_steps.pdf", bbox_inches="tight")

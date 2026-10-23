@@ -5,7 +5,7 @@ number of poses (--poses, default 4): (a) the ground truth with the poses and
 their beams, (b) GASPLAT, (c) the strongest baseline (--baseline, default LFD).
 Bottom row: (d) NRMSE and (e) computation time of every method over the number of
 poses, read from the results of scripts/experiments/num_measurements.py (mean and one
-standard deviation over the sweep headings; for the times, geometric mean and spread). The time of a grid method
+standard deviation over the sweep headings). The time of a grid method
 includes the construction of its system matrix, so every time covers the whole
 reconstruction from the measurements to the map.
 
@@ -32,19 +32,18 @@ from utils.gaden_utils import DEFAULT_ROOT
 from utils.sim_utils import generate_simulation_data
 from utils.experiment_utils import run_methods
 
-# Computer Modern, as in the figures of the method
+# STIX (Times-like): heavier strokes than Computer Modern, readable at the printed size
 plt.rcParams.update({
-    "font.family": "serif",
-    "font.serif": ["cmr10"],
-    "mathtext.fontset": "cm",
+    "font.family": "STIXGeneral",
+    "mathtext.fontset": "stix",
     "axes.formatter.use_mathtext": True,
     "axes.unicode_minus": False,
-    "font.size": 7.5,
-    "axes.titlesize": 8,
-    "axes.labelsize": 7.5,
-    "legend.fontsize": 7,
-    "xtick.labelsize": 7,
-    "ytick.labelsize": 7,
+    "font.size": 9,
+    "axes.titlesize": 9.5,
+    "axes.labelsize": 9,
+    "legend.fontsize": 9,
+    "xtick.labelsize": 8.5,
+    "ytick.labelsize": 8.5,
 })
 
 SCENARIO = "10x6_empty_room_side_plume_h0.75_t1000"
@@ -78,10 +77,7 @@ def curves(path: str):
             rs = [r["metrics"][m] for r in runs if r["step"] == s]
             nrmse.append([r["nrmse"] for r in rs])
             time.append([r["time"] + (r.get("matrix_time") or 0.0) for r in rs])
-        # times are shown on a log axis: geometric mean and spread, so the band stays positive
-        log_t = np.log(np.array(time))
-        out[m] = {"nrmse": (np.mean(nrmse, axis=1), np.std(nrmse, axis=1)),
-                  "time": (np.exp(log_t.mean(axis=1)), np.exp(log_t.std(axis=1)))}
+        out[m] = {k: (np.mean(v, axis=1), np.std(v, axis=1)) for k, v in (("nrmse", nrmse), ("time", time))}
     return np.array(steps, dtype=float), np.array(beams), out
 
 
@@ -125,7 +121,7 @@ def main():
     path = args.results or latest_results()
     steps, n_beams, curve = curves(path)
 
-    fig = plt.figure(figsize=(7.16, 4.0))
+    fig = plt.figure(figsize=(7.16, 4.5))
     grid = fig.add_gridspec(2, 1, height_ratios=[1.0, 1.25], hspace=0.38, left=0.02, right=0.98, top=0.95, bottom=0.10)
     top_row = grid[0].subgridspec(1, 3, wspace=0.12)
     bottom_row = grid[1].subgridspec(1, 3, wspace=0.42, width_ratios=[1, 1, 0.55])
@@ -147,14 +143,10 @@ def main():
             if m not in curve:
                 continue
             style = AVAILABLE_METHODS[m]["style"]
-            center, spread = curve[m][key]
-            if key == "time":     # geometric: center times / divided by the spread
-                lo, hi, center = center / spread, center * spread, center
-            else:
-                center, spread = factor * center, factor * spread
-                lo, hi = center - spread, center + spread
+            center, spread = factor * curve[m][key][0], factor * curve[m][key][1]
+            lo, hi = np.maximum(center - spread, 0), center + spread
             ax.plot(steps, center, color=style["color"], marker=style["marker"], lw=1.8 if m == "Gas Splatting" else 1.1,
-                    ms=6 if m == "Gas Splatting" else 3.5, label=label(m))
+                    ms=7 if m == "Gas Splatting" else 4.5, label=label(m))
             ax.fill_between(steps, lo, hi, color=style["color"], alpha=0.15, lw=0)
         ax.axvline(args.poses, color="0.5", ls=":", lw=0.8)
         ax.set_xscale("log"); ax.set_xticks(steps); ax.set_xticklabels([f"{s:.0f}" for s in steps]); ax.minorticks_off()
@@ -165,7 +157,8 @@ def main():
         top.set_xticks(steps); top.set_xticklabels([f"{b:.0f}" for b in n_beams])
         top.set_xlabel("Number of beams", labelpad=2)
     plots[0].set_ylim(bottom=0)
-    plots[1].set_yscale("log")
+    plots[0].yaxis.set_major_locator(plt.MultipleLocator(2))
+    plots[1].set_ylim(bottom=0)
     for ax, letter in zip(plots, "de"):
         ax.text(-0.16, 1.17, f"({letter})", transform=ax.transAxes, ha="left", va="bottom")
 

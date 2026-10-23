@@ -40,15 +40,14 @@ from utils.init_utils import setup_gs_model
 from utils.sim_utils import (MeasurementBatch, EnvironmentContext, GroundTruth, generate_vantage_beams,
                              simulate_gas_integrals)
 
-# Computer Modern, as in the injection figure
+# STIX, as in the other figures of the paper
 plt.rcParams.update({
-    "font.family": "serif",
-    "font.serif": ["cmr10"],
-    "mathtext.fontset": "cm",
+    "font.family": "STIXGeneral",
+    "mathtext.fontset": "stix",
     "axes.formatter.use_mathtext": True,
     "axes.unicode_minus": False,
-    "font.size": 7.5,
-    "axes.titlesize": 7.5,
+    "font.size": 8.5,
+    "axes.titlesize": 8.5,
 })
 
 COLUMN_WIDTH = 3.46                    # inches, one column of the paper (cas-dc)
@@ -112,7 +111,7 @@ def draw_base(ax, field, obstacles, vmax, title):
     for x0, y0, x1, y1 in [(0.0, 0.0, map_w, map_h)] + rooms():
         ax.add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False, ec=C_WALL, lw=0.6, zorder=5))
     ax.text((WALL_X[1] + map_w) / 2, map_h / 2, "unobserved room", rotation=90, ha="center", va="center",
-            fontsize=6.5, color="0.45", style="italic", zorder=6)
+            fontsize=7.5, color="0.45", style="italic", zorder=6)
     ax.set_title(title, pad=2)
     ax.set_xlim(-0.05, map_w + 0.05)
     ax.set_ylim(-0.05, map_h + 0.05)
@@ -168,7 +167,7 @@ def main():
         Line2D([], [], color="k", marker="s", ls="", ms=2.0, label="emitter"),
         Line2D([], [], color=C_MODEL, marker=".", ls="", ms=4, label="primitive centers"),
     ], loc="outside lower center", ncol=3, frameon=False, handlelength=1.3, handletextpad=0.5,
-        columnspacing=1.2, fontsize=7)
+        columnspacing=1.2, fontsize=8)
 
     os.makedirs("plots", exist_ok=True)
     fig.savefig("plots/obstacle_penalty_toy.pdf", bbox_inches="tight")
