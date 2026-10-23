@@ -68,11 +68,14 @@ def calculate_metrics(gt_img, res_img):
 #            SCENARIO EXPERIMENTS
 # ==========================================
 
-def gas_map_metrics(gt: np.ndarray, pred: np.ndarray, obstacles: np.ndarray | None = None) -> dict:
+def gas_map_metrics(gt: np.ndarray, pred: np.ndarray, obstacles: np.ndarray | None = None,
+                    cell_size: float = 1.0) -> dict:
     """Reconstruction metrics, computed on the free cells where gas can be.
 
     nrmse: RMSE divided by the ground-truth peak, comparable across scenarios.
     peak_ratio: reconstructed peak / true peak.
+    peak_distance: distance between the true and the reconstructed maxima, in the
+        units of cell_size (meters for scenarios).
     mass_error: relative error of the total amount of gas.
     leak: fraction of the reconstructed gas that lies inside obstacles.
     ssim: structural similarity of both maps with the obstacles set to zero.
@@ -81,10 +84,13 @@ def gas_map_metrics(gt: np.ndarray, pred: np.ndarray, obstacles: np.ndarray | No
     g, p = gt[free], pred[free]
     peak = max(float(g.max()), 1e-12)
     rmse = float(np.sqrt(np.mean((p - g) ** 2)))
+    true_max = np.unravel_index(np.argmax(np.where(free, gt, -np.inf)), gt.shape)
+    pred_max = np.unravel_index(np.argmax(np.where(free, pred, -np.inf)), gt.shape)
     return {
         "rmse": rmse,
         "nrmse": rmse / peak,
         "peak_ratio": float(p.max()) / peak,
+        "peak_distance": float(np.hypot(true_max[0] - pred_max[0], true_max[1] - pred_max[1])) * cell_size,
         "mass_error": float(p.sum() - g.sum()) / max(float(g.sum()), 1e-12),
         "leak": float(pred[~free].sum()) / max(float(pred.sum()), 1e-12),
         "ssim": float(ssim(np.where(free, gt, 0.0), np.where(free, pred, 0.0), data_range=peak)),
@@ -113,7 +119,7 @@ def run_scenario(cfg: Config) -> tuple[dict, dict]:
     fit_time = init_data.info["setup_time"] + training.training_time
 
     pred = model.render_map(cell_size=cfg.env.cell_size)
-    metrics = gas_map_metrics(environment.ground_truth.gas_map, pred, environment.obstacles)
+    metrics = gas_map_metrics(environment.ground_truth.gas_map, pred, environment.obstacles, cfg.env.cell_size)
     metrics.update({
         "scenario": case_name(cfg),
         "beams": int(batch.measurements.shape[0]),
@@ -146,7 +152,7 @@ def run_methods(batch: MeasurementBatch, environment: EnvironmentContext, cfg: C
     for name in methods:
         pred, solve_time = AVAILABLE_METHODS[name]["func"](batch=batch, cfg=cfg, environment=environment,
                                                            system_matrix=system_matrix)
-        metrics[name] = {**gas_map_metrics(gt, pred, environment.obstacles), "time": solve_time,
+        metrics[name] = {**gas_map_metrics(gt, pred, environment.obstacles, cfg.env.cell_size), "time": solve_time,
                          "matrix_time": matrix_time if AVAILABLE_METHODS[name].get("needs_matrix") else None}
         preds[name] = pred
     return metrics, preds
