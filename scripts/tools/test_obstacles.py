@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from scipy.ndimage import binary_dilation
 from simple_parsing import ArgumentParser
+from shapely.geometry import LineString, Point
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
@@ -23,13 +24,71 @@ from utils.sim_utils import (
     GroundTruth,
     MeasurementBatch,
     generate_fractal_gas_distribution,
-    generate_obstacle_aware_beams,
+    generate_simple_beams,
     simulation_rngs,
     simulate_gas_integrals,
 )
 
 
 PENALTY_WEIGHTS = (0.0, 0.1, 1.0)
+
+
+def _intersection_points(geometry):
+    """Yield representative points from a ray/obstacle intersection."""
+    if geometry.is_empty:
+        return
+    if geometry.geom_type == "Point":
+        yield geometry
+    elif geometry.geom_type in {"MultiPoint", "GeometryCollection"}:
+        for item in geometry.geoms:
+            yield from _intersection_points(item)
+    elif geometry.geom_type in {"LineString", "MultiLineString"}:
+        for item in geometry.geoms if hasattr(geometry, "geoms") else [geometry]:
+            yield Point(item.coords[0])
+            yield Point(item.coords[-1])
+
+
+def generate_obstacle_aware_beams(
+    map_size_m: tuple[float, float],
+    num_beams: int,
+    obstacle_geometry,
+    rng: np.random.Generator,
+) -> list:
+    """Simple beam layouts (see generate_simple_beams) that start in free space, clipped at the first obstacle."""
+    if obstacle_geometry is None or num_beams <= 0:
+        return generate_simple_beams(map_size_m, num_beams, rng=rng)
+
+    beams = []
+    candidate_beams = generate_simple_beams(map_size_m, max(num_beams * 10, 100), rng=rng)
+    rng.shuffle(candidate_beams)
+
+    for (x0, y0), (x1, y1) in candidate_beams:
+        line = LineString([(x0, y0), (x1, y1)])
+        total_length = line.length
+        if total_length <= 1e-8:
+            continue
+
+        start_point = Point(x0, y0)
+        if obstacle_geometry.covers(start_point):
+            continue
+
+        closest_distance = total_length
+        for point in _intersection_points(line.intersection(obstacle_geometry)):
+            distance = start_point.distance(point)
+            if 1e-6 < distance < closest_distance:
+                closest_distance = distance
+
+        if closest_distance < total_length:
+            clipped = line.interpolate(closest_distance)
+            endpoint = (clipped.x, clipped.y)
+        else:
+            endpoint = (x1, y1)
+
+        beams.append(((x0, y0), endpoint))
+        if len(beams) >= num_beams:
+            return beams
+
+    raise RuntimeError(f"Could only generate {len(beams)} obstacle-aware beams out of {num_beams}.")
 
 
 def validate_grid(cfg: Config) -> tuple[int, int]:

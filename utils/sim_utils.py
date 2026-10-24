@@ -6,10 +6,9 @@ import torch
 import numpy as np
 from dataclasses import dataclass
 from scipy.ndimage import gaussian_filter
-from shapely.geometry import LineString, Point
 
 from config import Config
-from utils.geometry_utils import ray_cell_lengths
+from utils.geometry_utils import ray_cell_lengths, raycast_grid, visible_cells
 
 
 @dataclass
@@ -98,78 +97,39 @@ def generate_fractal_gas_distribution(
 # ==========================================
 
 def generate_radial_beams(map_size_m: tuple, num_beams: int):
-    """Generates beams starting from bottom corners with endpoints distributed homogeneously in angle."""
-    beams = []
+    """Generates beams fanning out from both bottom corners, evenly spread in angle over 90 degrees."""
     map_x, map_y = map_size_m
 
-    num_beams_left = int(num_beams // 2)
-    if num_beams_left > 0:
-        angles_left = np.linspace(0, np.pi/2, num_beams_left)
-        for angle in angles_left:
-            x0, y0 = 0.0, 0.0
-            if angle == 0:
-                x1, y1 = map_x, 0.0
-            elif angle == np.pi / 2:
-                x1, y1 = 0.0, map_y
-            else:
-                if angle <= math.atan2(map_y, map_x):
-                    x1 = map_x
-                    y1 = map_x * np.tan(angle)
-                else:
-                    x1 = map_y / np.tan(angle)
-                    y1 = map_y
-            beams.append(((x0, y0), (x1, y1)))
+    def fan(n):   # endpoints of the fan from (0, 0)
+        ends = []
+        for angle in np.linspace(0, np.pi / 2, n):
+            if angle <= math.atan2(map_y, map_x):
+                ends.append((map_x, map_x * np.tan(angle)))
+            else:   # exact 0 at 90 degrees, where 1 / tan is not
+                ends.append((0.0 if angle == np.pi / 2 else map_y / np.tan(angle), map_y))
+        return ends
 
-    num_beams_right = num_beams - num_beams_left
-    if num_beams_right > 0:
-        angles_right = np.linspace(0, np.pi/2, num_beams_right)
-        for angle in angles_right:
-            x0, y0 = map_x, 0.0
-            if angle == 0:
-                x1, y1 = 0.0, 0.0
-            elif angle == np.pi / 2:
-                x1, y1 = map_x, map_y
-            else:
-                if angle <= math.atan2(map_y, map_x):
-                    x1 = 0.0
-                    y1 = map_x * np.tan(angle)
-                else:
-                    x1 = map_x - (map_y / np.tan(angle))
-                    y1 = map_y
-            beams.append(((x0, y0), (x1, y1)))
-    
-    return beams
+    # The right fan mirrors the left one
+    left = [((0.0, 0.0), end) for end in fan(num_beams // 2)]
+    right = [((map_x, 0.0), (map_x - x1, y1)) for x1, y1 in fan(num_beams - num_beams // 2)]
+    return left + right
 
 def generate_random_beams(map_size_m: tuple, num_beams: int, rng: np.random.Generator | None = None):
-    """Generates random TDLAS beams from the perimeter of a map in meters."""
+    """Generates random TDLAS beams between two different edges of a map in meters."""
     rng = rng or np.random.default_rng()
-    beams = []
     map_x, map_y = map_size_m
+    edges = ['left', 'right', 'bottom', 'top']
 
+    def point_on(edge):
+        if edge in ('left', 'right'):
+            return (0.0 if edge == 'left' else map_x), rng.uniform(0, map_y)
+        return rng.uniform(0, map_x), (0.0 if edge == 'bottom' else map_y)
+
+    beams = []
     for _ in range(num_beams):
-        start_edge = rng.choice(['left', 'right', 'bottom', 'top'])
-        if start_edge == 'left':
-            x0, y0 = 0.0, rng.uniform(0, map_y)
-        elif start_edge == 'right':
-            x0, y0 = map_x, rng.uniform(0, map_y)
-        elif start_edge == 'bottom':
-            x0, y0 = rng.uniform(0, map_x), 0.0
-        else:
-            x0, y0 = rng.uniform(0, map_x), map_y
-
-        end_edges = [edge for edge in ['left', 'right', 'bottom', 'top'] if edge != start_edge]
-        end_edge = rng.choice(end_edges)
-        if end_edge == 'left':
-            x1, y1 = 0.0, rng.uniform(0, map_y)
-        elif end_edge == 'right':
-            x1, y1 = map_x, rng.uniform(0, map_y)
-        elif end_edge == 'bottom':
-            x1, y1 = rng.uniform(0, map_x), 0.0
-        else:
-            x1, y1 = rng.uniform(0, map_x), map_y
-
-        beams.append(((x0, y0), (x1, y1)))
-        
+        start_edge = rng.choice(edges)
+        start = point_on(start_edge)
+        beams.append((start, point_on(rng.choice([e for e in edges if e != start_edge]))))
     return beams
 
 def generate_horizontal_vertical_beams(map_size_m: tuple, num_beams: int):
@@ -195,170 +155,17 @@ def generate_horizontal_vertical_beams(map_size_m: tuple, num_beams: int):
 
 def generate_simple_beams(map_size_m: tuple[float, float], num_beams: int,
                           rng: np.random.Generator | None = None):
-    """Generate a lightweight mixed beam set using the simple beam layouts already in this module."""
-    if num_beams <= 0:
-        return []
-
-    generators = [
-        generate_random_beams,
-        generate_radial_beams,
-        generate_horizontal_vertical_beams,
-    ]
-
-    counts = [num_beams // len(generators)] * len(generators)
-    for idx in range(num_beams % len(generators)):
-        counts[idx] += 1
-
-    beams = []
-    for generator, count in zip(generators, counts):
-        if count > 0:
-            if generator is generate_random_beams:
-                beams.extend(generator(map_size_m, count, rng=rng))
-            else:
-                beams.extend(generator(map_size_m, count))
-
-    return beams[:num_beams]
-
-
-def _intersection_points(geometry):
-    """Yield representative points from a ray/obstacle intersection."""
-    if geometry.is_empty:
-        return
-    if geometry.geom_type == "Point":
-        yield geometry
-    elif geometry.geom_type in {"MultiPoint", "GeometryCollection"}:
-        for item in geometry.geoms:
-            yield from _intersection_points(item)
-    elif geometry.geom_type in {"LineString", "MultiLineString"}:
-        for item in geometry.geoms if hasattr(geometry, "geoms") else [geometry]:
-            yield Point(item.coords[0])
-            yield Point(item.coords[-1])
-
-def generate_obstacle_aware_beams(
-    map_size_m: tuple[float, float],
-    num_beams: int,
-    obstacle_geometry=None,
-    rng: np.random.Generator | None = None,
-) -> list:
-    """Generate beam geometries from the existing simple layout and clip them at obstacles."""
-    if num_beams <= 0:
-        return []
-    rng = rng or np.random.default_rng()
-
-    if obstacle_geometry is None:
-        return generate_simple_beams(map_size_m, num_beams, rng=rng)
-
-    beams = []
-    candidate_count = max(num_beams * 10, 100)
-    candidate_beams = generate_simple_beams(map_size_m, candidate_count, rng=rng)
-    rng.shuffle(candidate_beams)
-
-    for (x0, y0), (x1, y1) in candidate_beams:
-        line = LineString([(x0, y0), (x1, y1)])
-        total_length = line.length
-        if total_length <= 1e-8:
-            continue
-
-        start_point = Point(x0, y0)
-        if obstacle_geometry.covers(start_point):
-            continue
-
-        closest_distance = total_length
-        for point in _intersection_points(line.intersection(obstacle_geometry)):
-            distance = start_point.distance(point)
-            if 1e-6 < distance < closest_distance:
-                closest_distance = distance
-
-        if closest_distance < total_length:
-            clipped = line.interpolate(closest_distance)
-            endpoint = (clipped.x, clipped.y)
-        else:
-            endpoint = (x1, y1)
-
-        beams.append(((x0, y0), endpoint))
-        if len(beams) >= num_beams:
-            return beams[:num_beams]
-
-    if len(beams) < num_beams:
-        raise RuntimeError(
-            f"Could only generate {len(beams)} obstacle-aware beams out of {num_beams}."
-        )
-    return beams[:num_beams]
+    """Beams across a map without obstacles: a third each of random, radial and
+    horizontal/vertical beams (the first ones get the remainder)."""
+    counts = [num_beams // 3 + (i < num_beams % 3) for i in range(3)]
+    return (generate_random_beams(map_size_m, counts[0], rng=rng)
+            + generate_radial_beams(map_size_m, counts[1])
+            + generate_horizontal_vertical_beams(map_size_m, counts[2]))
 
 
 # ==========================================
 #          VANTAGE-POINT BEAMS
 # ==========================================
-
-def raycast_grid(obstacles: np.ndarray, cell_size: float, origin: tuple[float, float],
-                 angle: float, max_range: float) -> float:
-    """Distance from `origin` along `angle` to the first blocked cell (DDA).
-
-    obstacles: (H, W) bool, row = y, col = x. Leaving the map counts as a hit.
-    Returns the distance to the boundary of the first blocked cell, i.e. the
-    beam ends on the wall surface, capped at max_range.
-    """
-    H, W = obstacles.shape
-    x0, y0 = origin
-    dx, dy = math.cos(angle), math.sin(angle)
-    col, row = int(x0 // cell_size), int(y0 // cell_size)
-
-    step_c = 1 if dx > 0 else -1
-    step_r = 1 if dy > 0 else -1
-    inv_dx = abs(1.0 / dx) if abs(dx) > 1e-12 else math.inf
-    inv_dy = abs(1.0 / dy) if abs(dy) > 1e-12 else math.inf
-    next_x = (col + (step_c > 0)) * cell_size
-    next_y = (row + (step_r > 0)) * cell_size
-    t_max_x = abs(next_x - x0) * inv_dx
-    t_max_y = abs(next_y - y0) * inv_dy
-    t_delta_x, t_delta_y = cell_size * inv_dx, cell_size * inv_dy
-
-    t = 0.0
-    while t < max_range:
-        if t_max_x < t_max_y:
-            t, col = t_max_x, col + step_c
-            t_max_x += t_delta_x
-        else:
-            t, row = t_max_y, row + step_r
-            t_max_y += t_delta_y
-        if not (0 <= row < H and 0 <= col < W) or obstacles[row, col]:
-            return min(t, max_range)
-    return max_range
-
-
-def visible_cells(origins: np.ndarray, obstacles: np.ndarray, cell_size: float,
-                  max_range: float, num_rays: int = 720) -> np.ndarray:
-    """Cells crossed by a full 360-degree sweep of beams from each origin.
-
-    Every origin casts `num_rays` evenly spaced rays, marched in quarter-cell
-    steps until they hit an obstacle, leave the map or reach max_range. Returns
-    an (O, H*W) boolean matrix: entry (o, i) is True when some ray from origin o
-    crosses cell i (flat index row * W + col).
-    """
-    H, W = obstacles.shape
-    angles = np.arange(num_rays) * (2 * np.pi / num_rays)
-    dirs = np.stack([np.cos(angles), np.sin(angles)], axis=1)              # (R, 2)
-    O = len(origins)
-    pos = np.repeat(origins, num_rays, axis=0)                             # (O*R, 2)
-    step = np.tile(dirs, (O, 1)) * (cell_size / 4)
-    owner = np.repeat(np.arange(O), num_rays)
-    visible = np.zeros((O, H * W), dtype=bool)
-
-    alive = np.arange(O * num_rays)
-    for _ in range(int(math.ceil(max_range / (cell_size / 4)))):
-        p = pos[alive]
-        col = np.floor(p[:, 0] / cell_size).astype(np.int64)
-        row = np.floor(p[:, 1] / cell_size).astype(np.int64)
-        inside = (row >= 0) & (row < H) & (col >= 0) & (col < W)
-        open_ = inside.copy()
-        open_[inside] = ~obstacles[row[inside], col[inside]]
-        alive, row, col = alive[open_], row[open_], col[open_]
-        if len(alive) == 0:
-            break
-        visible[owner[alive], row * W + col] = True
-        pos[alive] += step[alive]
-    return visible
-
 
 def select_vantage_poses(obstacles: np.ndarray, cell_size: float,
                          num_poses: int | None = None, min_clearance: float = 0.3,
@@ -545,7 +352,7 @@ def simulate_gas_integrals(
     return lengths @ np.asarray(gas_concentration_map, dtype=np.float64).ravel()
 
 # ==========================================
-#         GENERATE GROUND TRUTH
+#         MEASUREMENTS OF A CASE
 # ==========================================
 
 def add_measurement_noise(y_true, snr_db=30, abs_std=0.0, rng: np.random.Generator | None = None):
@@ -570,61 +377,62 @@ def simulation_rngs(seed: int | None) -> tuple[np.random.Generator, ...]:
     return tuple(np.random.default_rng(s) for s in np.random.SeedSequence(seed).spawn(3))
 
 def generate_simulation_data(cfg: Config) -> tuple[MeasurementBatch, EnvironmentContext]:
-    """Generates gas distribution (ground truth), beams and measurements"""
-    
-    quiet = cfg.quiet
+    """Measurements of the case that cfg describes, and its environment.
+
+    The case depends on cfg.sim.scenario:
+      - None: a procedural map (generate_procedural_data).
+      - a GADEN scenario package: beams from vantage poses on its
+        snapshot (generate_scenario_data).
+    Packages set cfg.env.map_size and cfg.env.cell_size to their own.
+
+    Simulated measurements are exact integrals of the ground truth, plus noise
+    if cfg.sim.noise (cfg.sim.snr_db and cfg.sim.noise_floor); the ground truth
+    keeps the noise-free ones (y_true). The gas map, beams and noise draw from
+    independent streams of cfg.sim.seed (simulation_rngs).
+    """
     map_rng, beam_rng, noise_rng = simulation_rngs(cfg.sim.seed)
-
     if cfg.sim.scenario:
-        return generate_scenario_data(cfg, beam_rng, noise_rng)
-
-    # ----- Ground Truth -----
-    if not quiet: print("Generating procedural ground truth...")
-    map_w, map_h = cfg.env.map_size
-    grid_w = round(map_w / cfg.env.cell_size)
-    grid_h = round(map_h / cfg.env.cell_size)
-
-    img_gt = generate_fractal_gas_distribution(grid_size=(grid_h, grid_w), rng=map_rng)
-
-    # ------ Beams ------
-    if not quiet: print("Generating beams...")
-    beams_list = generate_simple_beams(
-        cfg.env.map_size,
-        cfg.sim.num_beams,
-        rng=beam_rng,
-    )
-
-    beams_tensor = torch.tensor(beams_list, dtype=torch.float32, device=cfg.device)
-
-    # ------- Measurements --------
-    measurements_list = simulate_gas_integrals(img_gt, beams_list, cfg.env.cell_size, quiet=quiet)
-    y_true = torch.tensor(measurements_list, dtype=torch.float32, device=cfg.device)
-
-    if cfg.sim.noise:
-        if not quiet: print(f"Adding noise to the measurements ({cfg.sim.snr_db} dB)...")
-        num_beams = len(beams_list)
-        if num_beams > 0:
-            measurements = add_measurement_noise(y_true[:num_beams], snr_db=cfg.sim.snr_db, rng=noise_rng)
-        else:
-            measurements = y_true
+        batch, environment = generate_scenario_data(cfg, beam_rng)
     else:
-        measurements = y_true
+        batch, environment = generate_procedural_data(cfg, map_rng, beam_rng)
+
+    if cfg.sim.noise and len(batch.measurements) > 0:
+        if not cfg.quiet: print(f"Adding noise to the measurements ({cfg.sim.snr_db} dB)...")
+        batch.measurements = add_measurement_noise(batch.measurements, snr_db=cfg.sim.snr_db,
+                                                   abs_std=cfg.sim.noise_floor, rng=noise_rng)
+    return batch, environment
+
+def generate_procedural_data(cfg: Config, map_rng: np.random.Generator,
+                             beam_rng: np.random.Generator) -> tuple[MeasurementBatch, EnvironmentContext]:
+    """Noise-free measurements on a procedural map: fractal gas without obstacles,
+    of size cfg.env.map_size and cell cfg.env.cell_size, crossed by
+    cfg.sim.num_beams beams (generate_simple_beams)."""
+    quiet = cfg.quiet
+    if not quiet: print("Generating procedural ground truth...")
+    grid_w = round(cfg.env.map_size[0] / cfg.env.cell_size)
+    grid_h = round(cfg.env.map_size[1] / cfg.env.cell_size)
+    gas_map = generate_fractal_gas_distribution(grid_size=(grid_h, grid_w), rng=map_rng)
+
+    if not quiet: print("Generating beams...")
+    beams_list = generate_simple_beams(cfg.env.map_size, cfg.sim.num_beams, rng=beam_rng)
+    integrals = simulate_gas_integrals(gas_map, beams_list, cfg.env.cell_size, quiet=quiet)
+    y_true = torch.tensor(integrals, dtype=torch.float32, device=cfg.device)
 
     return (
-        MeasurementBatch(beams=beams_tensor, measurements=measurements),
-        EnvironmentContext(ground_truth=GroundTruth(gas_map=img_gt, y_true=y_true))
+        MeasurementBatch(beams=torch.tensor(beams_list, dtype=torch.float32, device=cfg.device),
+                         measurements=y_true),
+        EnvironmentContext(ground_truth=GroundTruth(gas_map=gas_map, y_true=y_true)),
     )
 
-def generate_scenario_data(cfg: Config, beam_rng: np.random.Generator,
-                           noise_rng: np.random.Generator) -> tuple[MeasurementBatch, EnvironmentContext]:
-    """Measurements on a GADEN scenario package (see gaden_utils.py).
+def generate_scenario_data(cfg: Config, beam_rng: np.random.Generator) -> tuple[MeasurementBatch, EnvironmentContext]:
+    """Noise-free measurements on a GADEN scenario package (see gaden_utils.py).
 
     Uses cfg.sim.scenario (package directory) and the vantage-point fields of
     cfg.sim (num_poses, angular_step, beam_fov, min_clearance, max_range,
-    min_crossing_angle, coverage, noise_floor). cfg.sim.num_beams is not used:
-    the number of beams follows from the poses the map needs and the angular
-    resolution of the sweep. The distribution is quasi-static, so every beam
-    integrates the same snapshot, which is also the ground truth.
+    min_crossing_angle, coverage). cfg.sim.num_beams is not used: the number
+    of beams follows from the poses the map needs and the angular resolution
+    of the sweep. The distribution is quasi-static, so every beam integrates
+    the same snapshot, which is also the ground truth.
     """
     from utils.gaden_utils import load_scenario
 
@@ -661,15 +469,10 @@ def generate_scenario_data(cfg: Config, beam_rng: np.random.Generator,
         integrals = simulate_gas_integrals(sc.gas_map, beams_list, cfg.env.cell_size, quiet=quiet)
     dev = cfg.device
     y_true = torch.tensor(integrals, dtype=torch.float32, device=dev)
-    measurements = y_true
-    if cfg.sim.noise:
-        if not quiet: print(f"Adding noise to the measurements ({cfg.sim.snr_db} dB)...")
-        measurements = add_measurement_noise(measurements, snr_db=cfg.sim.snr_db,
-                                             abs_std=cfg.sim.noise_floor, rng=noise_rng)
 
     return (
         MeasurementBatch(beams=torch.tensor(beams_list, dtype=torch.float32, device=dev),
-                         measurements=measurements,
+                         measurements=y_true,
                          pose_ids=torch.tensor(pose_ids, device=dev)),
         EnvironmentContext(obstacles=obstacles,
                            ground_truth=GroundTruth(gas_map=sc.gas_map, y_true=y_true)),

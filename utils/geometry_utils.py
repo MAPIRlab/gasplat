@@ -1,3 +1,4 @@
+import math
 import numpy as np
 from scipy import sparse
 
@@ -84,3 +85,73 @@ def ray_cell_lengths(
         beam_idx, cell_idx, lengths = map(np.concatenate, (beam_idx, cell_idx, lengths))
     matrix = sparse.coo_matrix((lengths, (beam_idx, cell_idx)), shape=(len(beams), rows * cols)).tocsr()
     return matrix, valid
+
+
+def raycast_grid(obstacles: np.ndarray, cell_size: float, origin: tuple[float, float],
+                 angle: float, max_range: float) -> float:
+    """Distance from `origin` along `angle` to the first blocked cell (DDA).
+
+    obstacles: (H, W) bool, row = y, col = x. Leaving the map counts as a hit.
+    Returns the distance to the boundary of the first blocked cell, i.e. the
+    beam ends on the wall surface, capped at max_range.
+    """
+    H, W = obstacles.shape
+    x0, y0 = origin
+    dx, dy = math.cos(angle), math.sin(angle)
+    col, row = int(x0 // cell_size), int(y0 // cell_size)
+
+    step_c = 1 if dx > 0 else -1
+    step_r = 1 if dy > 0 else -1
+    inv_dx = abs(1.0 / dx) if abs(dx) > 1e-12 else math.inf
+    inv_dy = abs(1.0 / dy) if abs(dy) > 1e-12 else math.inf
+    next_x = (col + (step_c > 0)) * cell_size
+    next_y = (row + (step_r > 0)) * cell_size
+    t_max_x = abs(next_x - x0) * inv_dx
+    t_max_y = abs(next_y - y0) * inv_dy
+    t_delta_x, t_delta_y = cell_size * inv_dx, cell_size * inv_dy
+
+    t = 0.0
+    while t < max_range:
+        if t_max_x < t_max_y:
+            t, col = t_max_x, col + step_c
+            t_max_x += t_delta_x
+        else:
+            t, row = t_max_y, row + step_r
+            t_max_y += t_delta_y
+        if not (0 <= row < H and 0 <= col < W) or obstacles[row, col]:
+            return min(t, max_range)
+    return max_range
+
+
+def visible_cells(origins: np.ndarray, obstacles: np.ndarray, cell_size: float,
+                  max_range: float, num_rays: int = 720) -> np.ndarray:
+    """Cells crossed by a full 360-degree sweep of beams from each origin.
+
+    Every origin casts `num_rays` evenly spaced rays, marched in quarter-cell
+    steps until they hit an obstacle, leave the map or reach max_range. Returns
+    an (O, H*W) boolean matrix: entry (o, i) is True when some ray from origin o
+    crosses cell i (flat index row * W + col).
+    """
+    H, W = obstacles.shape
+    angles = np.arange(num_rays) * (2 * np.pi / num_rays)
+    dirs = np.stack([np.cos(angles), np.sin(angles)], axis=1)              # (R, 2)
+    O = len(origins)
+    pos = np.repeat(origins, num_rays, axis=0)                             # (O*R, 2)
+    step = np.tile(dirs, (O, 1)) * (cell_size / 4)
+    owner = np.repeat(np.arange(O), num_rays)
+    visible = np.zeros((O, H * W), dtype=bool)
+
+    alive = np.arange(O * num_rays)
+    for _ in range(int(math.ceil(max_range / (cell_size / 4)))):
+        p = pos[alive]
+        col = np.floor(p[:, 0] / cell_size).astype(np.int64)
+        row = np.floor(p[:, 1] / cell_size).astype(np.int64)
+        inside = (row >= 0) & (row < H) & (col >= 0) & (col < W)
+        open_ = inside.copy()
+        open_[inside] = ~obstacles[row[inside], col[inside]]
+        alive, row, col = alive[open_], row[open_], col[open_]
+        if len(alive) == 0:
+            break
+        visible[owner[alive], row * W + col] = True
+        pos[alive] += step[alive]
+    return visible
