@@ -49,13 +49,9 @@ class Trainer:
         self.cfg = cfg
         if self.cfg.train.live_vis:
             from visualization.live_visualizer import LiveVisualizer
-            self.visualizer = LiveVisualizer(cfg)
+            self.visualizer = LiveVisualizer(cfg, environment)
         else:
             self.visualizer = None
-        if self.visualizer and self.ground_truth is not None:
-            self.visualizer.set_ground_truth(self.ground_truth)
-        if self.visualizer and environment and environment.obstacles is not None:
-            self.visualizer.set_obstacles(environment.obstacles)
         self.results = TrainingResults()
         self.global_iteration = 0
 
@@ -367,8 +363,8 @@ class Trainer:
                 )
             # ---------------------------------
             
-            # --- Model evaluation ---
-            if self.cfg.train.do_eval and iteration % self.cfg.train.eval_interval == 0:
+            # --- Model evaluation (needs a ground truth) ---
+            if self.cfg.train.do_eval and self.ground_truth is not None and iteration % self.cfg.train.eval_interval == 0:
                 current_map = self.model.render_map(cell_size=self.cfg.env.cell_size)
                 error = current_map - self.ground_truth
                 if self.eval_mask is not None:

@@ -11,6 +11,7 @@ from typing import List, cast
 
 from config import Config
 from gs_model import GasSplattingModel
+from utils.sim_utils import EnvironmentContext
 
 THEME = {
     # Application & Layout Colors
@@ -46,7 +47,7 @@ THEME = {
     'min_window_width': 900,
     'min_window_height': 600,
     'margin': 20,           # Margins around the plots and inside the layout
-    'col_min_width': 200    # Minimum width for each of the 3 plot columns
+    'col_min_width': 200    # Minimum width for each of the plot columns
 }
 
 class CleanLogAxis(pg.AxisItem):
@@ -66,10 +67,16 @@ class CleanLogAxis(pg.AxisItem):
         return cleaned
 
 class LiveVisualizer:
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, environment: EnvironmentContext | None = None):
+        """Shows the ground truth and the obstacles of the environment, when it has them."""
         self.map_size = cfg.env.map_size
         self.cell_size = cfg.env.cell_size
         self.quiet = cfg.quiet
+        ground_truth = environment.ground_truth.gas_map if environment and environment.ground_truth else None
+        obstacles = environment.obstacles if environment else None
+        # Gaussians, estimated map and, when there is one, the ground truth
+        self.has_ground_truth = ground_truth is not None
+        self.num_cols = 3 if self.has_ground_truth else 2
 
         # Asynchronous frame queue for GIF generation
         self.frame_queue = queue.Queue()
@@ -85,6 +92,10 @@ class LiveVisualizer:
         self._init_window()
         self.app.processEvents()
         self._setup_plots()
+        if ground_truth is not None:
+            self._show_ground_truth(ground_truth)
+        if obstacles is not None:
+            self._show_obstacles(obstacles)
 
     def _frame_writer(self):
         while True:
@@ -143,7 +154,7 @@ class LiveVisualizer:
         screen_rect = self.app.primaryScreen().availableGeometry()
 
         target_width = int(screen_rect.width() * THEME['window_width_ratio'])
-        single_map_width = target_width / 3.0
+        single_map_width = target_width / self.num_cols
 
         map_aspect_ratio = self.map_size[0] / self.map_size[1]
         map_height = single_map_width / map_aspect_ratio
@@ -185,26 +196,31 @@ class LiveVisualizer:
         self.img_map_item = pg.ImageItem()
         self.p_map.addItem(self.img_map_item)
 
-        # Ground Truth (Row 0, Col 2)
-        self.p_gt = self.canvas.addPlot(row=0, col=2)
-        self.p_gt.setTitle(make_title("Ground Truth"), size=THEME['title_size'], color=THEME['title'])
-        self.p_gt.hideAxis('left')
-        self.p_gt.hideAxis('bottom')
-        
-        self.img_gt_item = pg.ImageItem()
-        self.p_gt.addItem(self.img_gt_item)
-        # Obstacles drawn over the ground truth (gray, transparent elsewhere)
+        map_plots = [self.p_gaussians, self.p_map]
+
+        # Ground Truth (Row 0, Col 2), if available
+        if self.has_ground_truth:
+            self.p_gt = self.canvas.addPlot(row=0, col=2)
+            self.p_gt.setTitle(make_title("Ground Truth"), size=THEME['title_size'], color=THEME['title'])
+            self.p_gt.hideAxis('left')
+            self.p_gt.hideAxis('bottom')
+
+            self.img_gt_item = pg.ImageItem()
+            self.p_gt.addItem(self.img_gt_item)
+            self.img_gt_item.setColorMap(THEME['colormap'])
+            map_plots.append(self.p_gt)
+
+        # Obstacles drawn over the ground truth, or over the estimated map without one (gray, transparent elsewhere)
         self.img_obstacles_item = pg.ImageItem()
         self.img_obstacles_item.setZValue(1)
-        self.p_gt.addItem(self.img_obstacles_item)
+        (self.p_gt if self.has_ground_truth else self.p_map).addItem(self.img_obstacles_item)
 
         # Colormap for maps
         self.img_map_item.setColorMap(THEME['colormap'])
-        self.img_gt_item.setColorMap(THEME['colormap'])
 
-        # Loss Curve (Row 1, Cols 0-2)
+        # Loss Curve (Row 1, all columns)
         custom_y_axis = CleanLogAxis(orientation='left')
-        self.p_loss = self.canvas.addPlot(row=1, col=0, colspan=3, axisItems={'left': custom_y_axis})
+        self.p_loss = self.canvas.addPlot(row=1, col=0, colspan=self.num_cols, axisItems={'left': custom_y_axis})
         self.p_loss.setTitle(make_title("Loss History"), size=THEME['title_size'], color=THEME['title'])
         self.p_loss.setLabel('bottom', "Iteration")
         self.p_loss.setLogMode(x=False, y=True)
@@ -222,7 +238,7 @@ class LiveVisualizer:
         )
         self.p_loss.setContentsMargins(0, 0, THEME['margin'], 0)
 
-        for p in [self.p_gaussians, self.p_map, self.p_gt]:
+        for p in map_plots:
             # Force the exact physical dimensions
             p.setXRange(0, self.map_size[0], padding=0.0)
             p.setYRange(0, self.map_size[1], padding=0.0)
@@ -245,22 +261,21 @@ class LiveVisualizer:
 
         if main_layout is not None:
             total_w = max(0, int(self.canvas.size().width()))
-            col_w = max(THEME['col_min_width'], int(total_w / 3) - 2 * THEME['margin'])
-            for col in range(3):
+            col_w = max(THEME['col_min_width'], int(total_w / self.num_cols) - 2 * THEME['margin'])
+            for col in range(self.num_cols):
                 main_layout.setColumnMinimumWidth(col, col_w)
 
-    def set_ground_truth(self, ground_truth: np.ndarray):
+    def _show_ground_truth(self, ground_truth: np.ndarray):
         """Sets the static ground truth image and stores its levels to lock the color scale."""
-        if ground_truth is not None:
-            self.img_gt_item.setImage(ground_truth.T, autoLevels=True)
-            self.img_gt_item.setRect(QtCore.QRectF(0, 0, self.map_size[0], self.map_size[1]))
-            # Save levels and apply them to both images so both maps use identical color scale
-            self.gt_levels = (float(ground_truth.min()), float(ground_truth.max()))
-            self.img_gt_item.setLevels(self.gt_levels)
-            self.img_map_item.setLevels(self.gt_levels)
+        self.img_gt_item.setImage(ground_truth.T, autoLevels=True)
+        self.img_gt_item.setRect(QtCore.QRectF(0, 0, self.map_size[0], self.map_size[1]))
+        # Save levels and apply them to both images so both maps use identical color scale
+        self.gt_levels = (float(ground_truth.min()), float(ground_truth.max()))
+        self.img_gt_item.setLevels(self.gt_levels)
+        self.img_map_item.setLevels(self.gt_levels)
 
-    def set_obstacles(self, obstacles: np.ndarray):
-        """Overlays the obstacle cells (H, W) on the ground truth panel."""
+    def _show_obstacles(self, obstacles: np.ndarray):
+        """Overlays the obstacle cells (H, W) on the ground truth panel (estimated map without ground truth)."""
         rgba = np.zeros(obstacles.shape + (4,), dtype=np.ubyte)
         rgba[obstacles > 0.5] = (180, 180, 180, 255)
         self.img_obstacles_item.setImage(rgba.transpose(1, 0, 2), levels=(0, 255))

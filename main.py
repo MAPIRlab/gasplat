@@ -27,7 +27,8 @@ def main():
     setup_time = init_data.info["setup_time"]
     if not quiet: print(f"Model initialized with {model.num_gaussians} Gaussians in {setup_time:.3f}s")
 
-    plot_initial_guess(environment.ground_truth.gas_map, init_data, cfg)
+    gt_map = environment.ground_truth.gas_map if environment.ground_truth is not None else None
+    plot_initial_guess(gt_map, init_data, cfg)
 
     # --- Training ---
     trainer = Trainer(model, cfg, environment=environment)

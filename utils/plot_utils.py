@@ -74,8 +74,35 @@ def plot_initial_guess(img_gt: np.ndarray | None, init_data: InitializationData,
     
     plt.close(fig) # Free memory
 
+def draw_beams(ax, batch: MeasurementBatch, by_measurement: bool = False):
+    """Draws the beams and the vantage poses (mean sensor position of each pose).
+
+    Lines get fainter as beams get denser (1/sqrt(N)), so that a fine scan does
+    not hide the map. by_measurement: opacity grows with the measured integral
+    instead, which shows where the gas is when there is no ground truth.
+    """
+    beams = batch.beams.cpu().numpy()
+    if by_measurement:
+        meas = batch.measurements.cpu().numpy()
+        span = meas.max() - meas.min() if len(meas) else 0.0
+        meas_norm = (meas - meas.min()) / span if span > 0 else np.zeros_like(meas)
+        colors = np.zeros((len(beams), 4))
+        colors[:, :3] = 1.0
+        colors[:, 3] = 0.01 + meas_norm * (0.05 - 0.01)
+        ax.add_collection(LineCollection(beams, colors=colors, linewidths=0.5))
+    else:
+        alpha = float(np.clip(4.0 / np.sqrt(max(len(beams), 1)), 0.08, 0.5))
+        ax.add_collection(LineCollection(beams, colors='w', linewidths=0.5, alpha=alpha))
+    if batch.pose_ids is not None:
+        pose_ids = batch.pose_ids.cpu().numpy()
+        poses = np.array([beams[pose_ids == p, 0].mean(axis=0) for p in np.unique(pose_ids)])
+        ax.scatter(poses[:, 0], poses[:, 1], marker='^', s=18, c='w', edgecolors='k', linewidths=0.5, zorder=3)
+
 def plot_training_results(gaussians: GasSplattingModel, batch: MeasurementBatch, environment: EnvironmentContext, results: TrainingResults, cfg: Config):
-    """Saves a plot with GT, GS reconstruction, loss history (with optional RMSE), and densification events"""
+    """Saves a plot with GT (if available), GS reconstruction, loss history (with optional RMSE), and densification events.
+
+    Without a ground truth (real measurements), the beams are drawn over the reconstruction instead.
+    """
 
     map_w, map_h = cfg.env.map_size
     grid_w = round(map_w / cfg.env.cell_size)
@@ -85,54 +112,58 @@ def plot_training_results(gaussians: GasSplattingModel, batch: MeasurementBatch,
     # Generate images
     img_pred_gaussian = gaussians.render_map(cell_size=max_map_dim / 100)
     img_pred = gaussians.render_map(cell_size=cfg.env.cell_size)
-    
+
     # Colormap min and max values
     vmin = 0
-    ground_truth = environment.ground_truth.gas_map
-    vmax = max(ground_truth.max(), img_pred.max())
+    ground_truth = environment.ground_truth.gas_map if environment.ground_truth is not None else None
+    vmax = img_pred.max() if ground_truth is None else max(ground_truth.max(), img_pred.max())
 
-    # RMSE, over free cells only when the environment has obstacles
     obstacles = environment.obstacles
-    free = np.ones_like(ground_truth, dtype=bool) if obstacles is None else ~(obstacles > 0.5)
-    rmse = np.sqrt(np.mean((img_pred - ground_truth)[free]**2))
-    nrmse = rmse / max(ground_truth[free].max(), 1e-12)
-    walls = None if obstacles is None else np.ma.masked_where(~(obstacles > 0.5), np.ones_like(ground_truth))
+    walls = None if obstacles is None else np.ma.masked_where(~(obstacles > 0.5), np.ones(obstacles.shape))
 
-    fig = plt.figure(figsize=(12, 8)) 
-    
+    fig = plt.figure(figsize=(12, 8))
+
     # Grid of 3 rows. Images on top, Loss in the middle, Densification below
-    gs = gridspec.GridSpec(3, 3, height_ratios=[1.5, 1, 1], hspace=0.3)
+    num_maps = 3 if ground_truth is not None else 2
+    gs = gridspec.GridSpec(3, num_maps, height_ratios=[1.5, 1, 1], hspace=0.3)
+    map_axes = []
 
     # 1. GT (Top Left)
-    ax1 = fig.add_subplot(gs[0, 0])
-    ax1.set_title(f"Ground Truth ({grid_w}x{grid_h})")
-    im1 = ax1.imshow(ground_truth, origin='lower', extent=(0, map_w, 0, map_h), cmap='viridis', vmin=vmin, vmax=vmax)
-    # Fainter lines as beams get denser (1/sqrt(N)), so that a fine scan does not hide the map
-    beams = batch.beams.cpu().numpy()
-    alpha = float(np.clip(4.0 / np.sqrt(max(len(beams), 1)), 0.08, 0.5))
-    ax1.add_collection(LineCollection(beams, colors='w', linewidths=0.5, alpha=alpha))
-    if batch.pose_ids is not None:
-        poses = np.unique(beams[:, 0], axis=0)
-        ax1.scatter(poses[:, 0], poses[:, 1], marker='^', s=18, c='w', edgecolors='k', linewidths=0.5, zorder=3)
+    if ground_truth is not None:
+        ax1 = fig.add_subplot(gs[0, 0])
+        ax1.set_title(f"Ground Truth ({grid_w}x{grid_h})")
+        ax1.imshow(ground_truth, origin='lower', extent=(0, map_w, 0, map_h), cmap='viridis', vmin=vmin, vmax=vmax)
+        draw_beams(ax1, batch)
+        map_axes.append(ax1)
 
     # 2. Reconstruction (Top Center)
-    ax2 = fig.add_subplot(gs[0, 1])
+    ax2 = fig.add_subplot(gs[0, num_maps - 2])
     pos = gaussians.get_pos().detach().cpu().numpy()
     ax2.set_title("GS Reconstruction")
     ax2.imshow(img_pred_gaussian, origin='lower', extent=(0, map_w, 0, map_h), cmap='viridis', vmin=vmin, vmax=vmax, interpolation='bilinear')
+    if ground_truth is None:
+        draw_beams(ax2, batch, by_measurement=True)
     ax2.scatter(pos[:, 0], pos[:, 1], marker='P', c='k', edgecolors='w', s=30, linewidths=1.0)
+    map_axes.append(ax2)
 
-    # 3. Reconstruction Grid (Top Right)
-    ax3 = fig.add_subplot(gs[0, 2])
-    ax3.set_title(f"GS Reconstruction (Grid)\nRMSE = {rmse:.4g} ({100 * nrmse:.1f}% of peak)")
-    ax3.imshow(img_pred, origin='lower', extent=(0, map_w, 0, map_h), cmap='viridis', vmin=vmin, vmax=vmax)
+    # 3. Reconstruction Grid (Top Right), with the RMSE over free cells only when the environment has obstacles
+    ax3 = fig.add_subplot(gs[0, num_maps - 1])
+    if ground_truth is not None:
+        free = np.ones_like(ground_truth, dtype=bool) if obstacles is None else ~(obstacles > 0.5)
+        rmse = np.sqrt(np.mean((img_pred - ground_truth)[free]**2))
+        nrmse = rmse / max(ground_truth[free].max(), 1e-12)
+        ax3.set_title(f"GS Reconstruction (Grid)\nRMSE = {rmse:.4g} ({100 * nrmse:.1f}% of peak)")
+    else:
+        ax3.set_title(f"GS Reconstruction (Grid, {grid_w}x{grid_h})")
+    im3 = ax3.imshow(img_pred, origin='lower', extent=(0, map_w, 0, map_h), cmap='viridis', vmin=vmin, vmax=vmax)
+    map_axes.append(ax3)
 
     if walls is not None:
-        for ax in (ax1, ax2, ax3):
+        for ax in map_axes:
             ax.imshow(walls, origin='lower', extent=(0, map_w, 0, map_h), cmap='Greys', vmin=0, vmax=2.5, interpolation='nearest')
 
     # Single Colorbar
-    fig.colorbar(im1, ax=[ax1, ax2, ax3], label="ppm", fraction=0.015, pad=0.02)
+    fig.colorbar(im3, ax=map_axes, label="ppm", fraction=0.015, pad=0.02)
 
     # ==========================================
     # 4. Loss History (Middle Row)
