@@ -2,18 +2,6 @@ import math
 import numpy as np
 from scipy import sparse
 
-def xy2cell(pos_m: tuple, cell_size_m: float) -> tuple[int, int]:
-    """Translate (x, y) coordinates in meters to (row, column) indices."""
-    column = int(pos_m[0] // cell_size_m)
-    row = int(pos_m[1] // cell_size_m)
-    return row, column
-
-def cell2xy(cell_rc: tuple, cell_size_m: float) -> tuple[float, float]:
-    """Translate (row, column) cell coordinates to cell-center (x, y) meters."""
-    x = cell_rc[1] * cell_size_m + cell_size_m / 2
-    y = cell_rc[0] * cell_size_m + cell_size_m / 2
-    return x, y
-
 def ray_cell_lengths(
     beams,
     grid_size: tuple[int, int],

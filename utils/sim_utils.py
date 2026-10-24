@@ -383,6 +383,8 @@ def generate_simulation_data(cfg: Config) -> tuple[MeasurementBatch, Environment
       - None: a procedural map (generate_procedural_data).
       - a GADEN scenario package: beams from vantage poses on its
         snapshot (generate_scenario_data).
+      - a real scenario package: the recorded measurements, without ground
+        truth or obstacles (real_data_utils.load_real_scenario).
     Packages set cfg.env.map_size and cfg.env.cell_size to their own.
 
     Simulated measurements are exact integrals of the ground truth, plus noise
@@ -390,6 +392,11 @@ def generate_simulation_data(cfg: Config) -> tuple[MeasurementBatch, Environment
     keeps the noise-free ones (y_true). The gas map, beams and noise draw from
     independent streams of cfg.sim.seed (simulation_rngs).
     """
+    from utils.real_data_utils import is_real_scenario, load_real_scenario
+
+    if cfg.sim.scenario and is_real_scenario(cfg.sim.scenario):
+        return load_real_scenario(cfg)
+
     map_rng, beam_rng, noise_rng = simulation_rngs(cfg.sim.seed)
     if cfg.sim.scenario:
         batch, environment = generate_scenario_data(cfg, beam_rng)
