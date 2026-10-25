@@ -28,7 +28,6 @@ import sys
 import dataclasses
 import functools
 import numpy as np
-import torch
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from simple_parsing import ArgumentParser
@@ -38,25 +37,13 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 from config import Config
 from methods.registry import AVAILABLE_METHODS
 from utils.scenario_sets import add_case_arguments, get_cases
-from utils.sim_utils import MeasurementBatch, generate_simulation_data
 from utils.plot_utils import set_publication_style
-from utils.experiment_utils import run_methods, save_experiment_results, yield_runs
+from utils.experiment_utils import measurements_at, run_methods, save_experiment_results, yield_runs
 
 
 def run_step(cfg: Config, step: float, axis: str, methods: list[str]) -> dict:
     """One point of the curve: the number of poses or the angular step (GADEN), or the number of beams (procedural)."""
-    if axis == "poses":
-        cfg.sim.num_poses = int(step)
-        batch, environment = generate_simulation_data(cfg)
-    elif axis == "angular_step":
-        cfg.sim.angular_step = step
-        batch, environment = generate_simulation_data(cfg)
-    else:
-        cfg.sim.num_beams = max(cfg.sim.num_beams, int(step))
-        batch, environment = generate_simulation_data(cfg)
-        order = torch.as_tensor(np.random.default_rng(cfg.sim.seed).permutation(len(batch.measurements))[:int(step)],
-                                device=batch.beams.device)
-        batch = MeasurementBatch(batch.beams[order], batch.measurements[order])
+    batch, environment = measurements_at(cfg, step, axis)
     metrics, _ = run_methods(batch, environment, cfg, methods)
     return {"metrics": metrics, "beams": int(batch.measurements.shape[0])}
 
@@ -127,8 +114,9 @@ def main():
             print(f"  {m:18s}" + "".join(f"{100 * np.mean(v):6.2f}±{100 * np.std(v):4.2f}" for v in nrmse))
 
     save_experiment_results(
-        {"experiment_name": f"num_measurements_{label}", "cases": names, "steps": steps,
+        {"experiment_name": f"num_measurements_{label}", "cases": names, "steps": steps, "axis": axis,
          "step_unit": {"beams": "beams", "poses": "poses", "angular_step": "angular step (deg)"}[axis],
+         "case_settings": {c.name: {"scenario": c.scenario, "seed": c.seed} for c in cases},
          "methods": args.methods,
          "config": dataclasses.asdict(cfg)},
         {"runs": [{"case": n, "step": s, "seed": r, **results[(n, s, r)]} for n in names for s in steps for r in repeats],

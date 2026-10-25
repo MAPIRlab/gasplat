@@ -118,6 +118,25 @@ def run_scenario(cfg: Config) -> tuple[dict, dict]:
     return metrics, {**evaluation_maps(environment, cfg), "pred": pred}
 
 
+def measurements_at(cfg: Config, step: float, axis: str) -> tuple[MeasurementBatch, EnvironmentContext]:
+    """Measurements of one point of the experiment on the number of measurements
+    (scripts/experiments/num_measurements.py): `step` poses or a sweep every `step`
+    degrees on a GADEN scenario (axis "poses" or "angular_step"), or the first
+    `step` beams of a fixed random order of cfg.sim.num_beams on a procedural map
+    (axis "beams"). Modifies cfg."""
+    if axis == "poses":
+        cfg.sim.num_poses = int(step)
+        return generate_simulation_data(cfg)
+    if axis == "angular_step":
+        cfg.sim.angular_step = step
+        return generate_simulation_data(cfg)
+    cfg.sim.num_beams = max(cfg.sim.num_beams, int(step))
+    batch, environment = generate_simulation_data(cfg)
+    order = torch.as_tensor(np.random.default_rng(cfg.sim.seed).permutation(len(batch.measurements))[:int(step)],
+                            device=batch.beams.device)
+    return MeasurementBatch(batch.beams[order], batch.measurements[order]), environment
+
+
 def run_methods(batch: MeasurementBatch, environment: EnvironmentContext, cfg: Config,
                 methods: list[str]) -> tuple[dict, dict]:
     """Reconstructs the same measurements with several methods (see methods/registry.py).
