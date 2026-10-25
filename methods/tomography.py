@@ -87,7 +87,7 @@ def build_g_csrbf_matrix(grid_size: tuple, cell_size_m: float, R: float,
                          beta: float, epsilon: float, center_step: int):
     """
     Builds the Phi matrix (sparse) of Gaussian Radial Basis Functions.
-    Iterates only over the cells within the Bounding Box of radius R.
+    Evaluates only the cells within the Bounding Box of radius R of each center.
     """
     rows, cols = grid_size
     num_voxels = rows * cols
@@ -95,45 +95,28 @@ def build_g_csrbf_matrix(grid_size: tuple, cell_size_m: float, R: float,
     center_rows = np.arange(0, rows, center_step)
     center_cols = np.arange(0, cols, center_step)
     num_centers = len(center_rows) * len(center_cols)
-    
-    row_indices = []
-    col_indices = []
-    data = []
-    
-    q_idx = 0
     r_pixels = int(np.ceil(R / cell_size_m))
-    
-    for cr in center_rows:
-        for cc in center_cols:
-            # Physical center of the RBF (meters)
-            xq = cc * cell_size_m + cell_size_m / 2.0
-            yq = cr * cell_size_m + cell_size_m / 2.0
-            
-            # Search limits (Bounding box)
-            min_r = max(0, cr - r_pixels)
-            max_r = min(rows - 1, cr + r_pixels)
-            min_c = max(0, cc - r_pixels)
-            max_c = min(cols - 1, cc + r_pixels)
-            
-            for r in range(min_r, max_r + 1):
-                for c in range(min_c, max_c + 1):
-                    xi = c * cell_size_m + cell_size_m / 2.0
-                    yi = r * cell_size_m + cell_size_m / 2.0
-                    
-                    dist = np.hypot(xi - xq, yi - yq)
-                    
-                    if dist <= R:
-                        # G-CSRBF
-                        val = ((1.0 - (dist / R)**2)**beta) * np.exp(-(epsilon * dist)**2)
-                        pixel_idx = r * cols + c
-                        
-                        row_indices.append(pixel_idx)
-                        col_indices.append(q_idx)
-                        data.append(val)
-                        
-            q_idx += 1
-            
-    Phi = sparse.csr_matrix((data, (row_indices, col_indices)), 
+
+    # Every center q (row by row) against every cell of its bounding box: (Q, O) arrays
+    cr, cc = (a.ravel()[:, None] for a in np.meshgrid(center_rows, center_cols, indexing='ij'))
+    offsets = np.arange(-r_pixels, r_pixels + 1)
+    dr, dc = (a.ravel()[None, :] for a in np.meshgrid(offsets, offsets, indexing='ij'))
+    r, c = cr + dr, cc + dc
+    q = np.broadcast_to(np.arange(num_centers)[:, None], r.shape)
+
+    # Physical centers of the RBFs and of the cells (meters)
+    xq = cc * cell_size_m + cell_size_m / 2.0
+    yq = cr * cell_size_m + cell_size_m / 2.0
+    xi = c * cell_size_m + cell_size_m / 2.0
+    yi = r * cell_size_m + cell_size_m / 2.0
+    dist = np.hypot(xi - xq, yi - yq)
+
+    keep = (r >= 0) & (r < rows) & (c >= 0) & (c < cols) & (dist <= R)
+    dist = dist[keep]
+    # G-CSRBF
+    data = ((1.0 - (dist / R)**2)**beta) * np.exp(-(epsilon * dist)**2)
+
+    Phi = sparse.csr_matrix((data, (r[keep] * cols + c[keep], q[keep])),
                             shape=(num_voxels, num_centers), dtype=np.float32)
     return Phi
 
@@ -230,27 +213,12 @@ def lfd(system_matrix: sparse.csr_matrix, measurements: np.ndarray, grid_size: t
     Returns:
         np.ndarray: The reconstructed image.
     """
-    num_pixels = system_matrix.shape[1]
-    image_shape = grid_size
+    rows, cols = grid_size
 
-    # Create difference operators for horizontal and vertical directions
-    Dx = sparse.dok_matrix((image_shape[0] * (image_shape[1] - 1), num_pixels))
-    Dy = sparse.dok_matrix(((image_shape[0] - 1) * image_shape[1], num_pixels))
-
-    for i in range(image_shape[0]):
-        for j in range(image_shape[1] - 1):
-            idx = i * image_shape[1] + j
-            Dx[i * (image_shape[1] - 1) + j, idx] = -1
-            Dx[i * (image_shape[1] - 1) + j, idx + 1] = 1
-
-    for i in range(image_shape[0] - 1):
-        for j in range(image_shape[1]):
-            idx = i * image_shape[1] + j
-            Dy[i * image_shape[1] + j, idx] = -1
-            Dy[i * image_shape[1] + j, idx + image_shape[1]] = 1
-
-    Dx = Dx.tocsr()
-    Dy = Dy.tocsr()
+    # Difference operators for horizontal and vertical directions: Dx differences
+    # neighbouring cells within each row, Dy cells one row apart (cols positions)
+    Dx = sparse.kron(sparse.identity(rows), sparse.diags([-1.0, 1.0], [0, 1], shape=(cols - 1, cols)), format='csr')
+    Dy = sparse.diags([-1.0, 1.0], [0, cols], shape=((rows - 1) * cols, rows * cols), format='csr')
 
     # Construct the augmented system matrix
     augmented_A = sparse.vstack([system_matrix, alpha * Dx, alpha * Dy])
@@ -302,19 +270,10 @@ def ltd(system_matrix: sparse.csr_matrix, measurements: np.ndarray, grid_size: t
     # Third derivative component for the columns (vertical)
     # 
     # This matrix penalizes sharp variations in the vertical direction (along the columns).
-    # The correct construction is more complex. A D3 operator is created in 1D space
-    # and then 'replicated' to apply it along the columns of the flattened vector.
-    D3_col = sparse.lil_matrix((cols * (rows - 3), num_voxels))
-    for j in range(cols):
-        for i in range(rows - 3):
-            idx = i * cols + j
-            # Stencil [-1, 3, -3, 1] applied along column j
-            D3_col[i * cols + j, idx] = -1
-            D3_col[i * cols + j, idx + cols] = 3
-            D3_col[i * cols + j, idx + 2 * cols] = -3
-            D3_col[i * cols + j, idx + 3 * cols] = 1
-    
-    D3_col = D3_col.tocsr() # Convert to CSR for better performance
+    # In the flattened vector, the cells below cell idx are idx + cols, idx + 2 * cols, ...,
+    # so the stencil [-1, 3, -3, 1] lies on the diagonals at those offsets.
+    D3_col = sparse.diags([-1.0, 3.0, -3.0, 1.0], [0, cols, 2 * cols, 3 * cols],
+                          shape=(cols * (rows - 3), num_voxels), format='csr')
 
     # Construction of the augmented system of equations
     # Regularization is added as new 'equations' with weight alpha.
