@@ -28,7 +28,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 
 from config import Config
 from methods.registry import AVAILABLE_METHODS
-from utils.scenario_sets import add_case_arguments, get_cases
+from utils.scenario_sets import add_case_arguments, cases_label, get_cases
 from utils.sim_utils import generate_simulation_data
 from utils.plot_utils import plot_reconstruction_grid, set_publication_style
 from utils.experiment_utils import evaluation_maps, run_methods, save_experiment_results, yield_runs
@@ -55,8 +55,8 @@ def main():
     cfg.train.live_vis = False
     set_publication_style()
 
-    cases = get_cases(args.set, args.seeds)
-    label = "procedural" if args.seeds else args.set
+    cases = get_cases(args.set, args.seeds, cfg.sim.scenario)
+    label = cases_label(args.set, args.seeds, cfg.sim.scenario)
     procedural = cases[0].scenario is None
     if procedural and args.repeats > 1:
         sys.exit("--repeats applies to GADEN scenarios; procedural maps vary with --seeds")

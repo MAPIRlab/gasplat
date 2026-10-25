@@ -13,7 +13,7 @@ house archives.
 
 The procedural set holds fractal maps without obstacles, one per seed: a
 non-Gaussian control and a cheap testbed. Experiment scripts take a set with
---set, or procedural maps with --seeds.
+--set, procedural maps with --seeds, or a single scenario package with --scenario.
 """
 import os
 import copy
@@ -58,7 +58,7 @@ SIMPLE = [
 PROCEDURAL_SEEDS = list(range(10))
 
 SETS = {"tuning": TUNING, "held_out": HELD_OUT, "all": TUNING + HELD_OUT, "simple": SIMPLE,
-        "side_plume": SIMPLE[:1], "procedural": PROCEDURAL_SEEDS}
+        "procedural": PROCEDURAL_SEEDS}
 
 
 def scenario_dirs(set_name: str, root: str = DEFAULT_ROOT) -> list[str]:
@@ -90,22 +90,35 @@ def case_name(cfg: Config) -> str:
     return f"procedural_seed{cfg.sim.seed}"
 
 
-def get_cases(set_name: str | None = None, seeds: list[int] | None = None, root: str = DEFAULT_ROOT) -> list[Case]:
-    """Cases of a set, or procedural maps for the given seeds (which take precedence)."""
+def get_cases(set_name: str | None = None, seeds: list[int] | None = None, scenario: str | None = None,
+              root: str = DEFAULT_ROOT) -> list[Case]:
+    """Procedural maps for the given seeds, else the single scenario package, else the cases of a set."""
     if seeds:
         return [Case(f"procedural_seed{s}", seed=s) for s in seeds]
-    if set_name == "procedural":
+    if scenario:
+        cases = [Case(os.path.basename(os.path.normpath(scenario)), scenario=scenario)]
+    elif set_name == "procedural":
         return [Case(f"procedural_seed{s}", seed=s) for s in PROCEDURAL_SEEDS]
-    cases = [Case(os.path.basename(d), scenario=d) for d in scenario_dirs(set_name, root)]
+    else:
+        cases = [Case(os.path.basename(d), scenario=d) for d in scenario_dirs(set_name, root)]
     missing = [c.name for c in cases if not os.path.exists(os.path.join(c.scenario, "scenario.npz"))]
     if missing:
-        tool = "simulate_gaden.py" if set_name in ("simple", "side_plume") else "make_scenarios.py"
+        tool = "simulate_gaden.py" if set_name == "simple" else "make_scenarios.py"
         raise SystemExit(f"Missing scenarios: {', '.join(missing)}. Create them with scripts/tools/{tool}")
     return cases
 
 
+def cases_label(set_name: str, seeds: list[int] | None = None, scenario: str | None = None) -> str:
+    """Name of what get_cases runs, for the result and plot files."""
+    if seeds:
+        return "procedural"
+    return os.path.basename(os.path.normpath(scenario)) if scenario else set_name
+
+
 def add_case_arguments(parser, default_set: str = "tuning"):
-    """--set and --seeds options shared by the experiment scripts."""
-    parser.add_argument("--set", default=default_set, choices=list(SETS), help="Scenario set to run")
+    """--set and --seeds options shared by the experiment scripts. A single scenario
+    is run with --scenario (an option of the configuration), which replaces the set."""
+    parser.add_argument("--set", default=default_set, choices=list(SETS),
+                        help="Scenario set to run (ignored with --scenario)")
     parser.add_argument("--seeds", nargs="+", type=int, default=None,
                         help="Run procedural maps with these seeds instead of a set")

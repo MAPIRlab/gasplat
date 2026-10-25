@@ -22,7 +22,7 @@ from simple_parsing import ArgumentParser
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from config import Config
-from utils.scenario_sets import add_case_arguments, get_cases
+from utils.scenario_sets import add_case_arguments, cases_label, get_cases
 from utils.plot_utils import plot_reconstruction_grid, set_publication_style
 from utils.experiment_utils import default_workers, yield_scenario_runs, save_experiment_results
 
@@ -54,8 +54,8 @@ def main():
     cfg.train.live_vis = False
 
     set_publication_style()
-    cases = get_cases(args.set, args.seeds)
-    label = "procedural" if args.seeds else args.set
+    cases = get_cases(args.set, args.seeds, cfg.sim.scenario)
+    label = cases_label(args.set, args.seeds, cfg.sim.scenario)
     tasks = [(c.name, c.apply(cfg)) for c in cases]
 
     metrics, maps = {}, {}

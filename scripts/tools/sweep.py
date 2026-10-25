@@ -111,7 +111,7 @@ def main():
     cfg.train.live_vis = False
     set_publication_style()
 
-    cases = get_cases(args.set, args.seeds)
+    cases = get_cases(args.set, args.seeds, cfg.sim.scenario)
     scenarios = [c.name for c in cases]
 
     for name in args.params:

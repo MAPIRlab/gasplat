@@ -11,8 +11,10 @@ method includes the construction of its system matrix, so every time covers the
 whole reconstruction from the measurements to the map.
 
 Paper figure (side plume, 4 poses):
-    python scripts/experiments/num_measurements.py --set side_plume --poses 2 3 4 6 8 12 16 --repeats 5 --workers 1
-    python scripts/figures/num_measurements_figure.py results/num_measurements_side_plume_poses_<date>.json --step 4 \\
+    python scripts/experiments/num_measurements.py --scenario data/scenarios/10x6_empty_room_side_plume_h0.75_t1000 \\
+        --poses 2 3 4 6 8 12 16 --repeats 5 --workers 1
+    python scripts/figures/num_measurements_figure.py \\
+        results/num_measurements_10x6_empty_room_side_plume_h0.75_t1000_poses_<date>.json --step 4 \\
         --output plots/num_measurements_side_plume
 """
 import os

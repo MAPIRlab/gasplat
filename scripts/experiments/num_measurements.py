@@ -36,7 +36,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 
 from config import Config
 from methods.registry import AVAILABLE_METHODS
-from utils.scenario_sets import add_case_arguments, get_cases
+from utils.scenario_sets import add_case_arguments, cases_label, get_cases
 from utils.plot_utils import set_publication_style
 from utils.experiment_utils import measurements_at, run_methods, save_experiment_results, yield_runs
 
@@ -67,7 +67,7 @@ def main():
     cfg.train.live_vis = False
     set_publication_style()
 
-    cases = get_cases(args.set, args.seeds)
+    cases = get_cases(args.set, args.seeds, cfg.sim.scenario)
     procedural = cases[0].scenario is None
     axis = "beams" if procedural else ("poses" if args.poses else "angular_step")
     steps = {"beams": args.beams, "poses": args.poses, "angular_step": args.angular_steps}[axis]
@@ -76,7 +76,7 @@ def main():
     steps = sorted(steps, reverse=axis == "angular_step")   # fewest measurements first
     if procedural:
         cfg.sim.num_beams = max(steps)
-    label = "procedural" if args.seeds else f"{args.set}_{axis}"
+    label = "procedural" if args.seeds else f"{cases_label(args.set, args.seeds, cfg.sim.scenario)}_{axis}"
 
     if procedural and args.repeats > 1:
         sys.exit("--repeats applies to GADEN scenarios; procedural maps vary with --seeds")
@@ -116,7 +116,7 @@ def main():
     save_experiment_results(
         {"experiment_name": f"num_measurements_{label}", "cases": names, "steps": steps, "axis": axis,
          "step_unit": {"beams": "beams", "poses": "poses", "angular_step": "angular step (deg)"}[axis],
-         "case_settings": {c.name: {"scenario": c.scenario, "seed": c.seed} for c in cases},
+         "case_settings": {c.name: {"scenario": c.scenario and os.path.abspath(c.scenario), "seed": c.seed} for c in cases},
          "methods": args.methods,
          "config": dataclasses.asdict(cfg)},
         {"runs": [{"case": n, "step": s, "seed": r, **results[(n, s, r)]} for n in names for s in steps for r in repeats],
