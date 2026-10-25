@@ -143,20 +143,23 @@ def run_methods(batch: MeasurementBatch, environment: EnvironmentContext, cfg: C
 
     The system matrix of the grid methods is built once; its time is reported
     on its own ("matrix_time"), and each method reports only its own solve or
-    fit time. Returns ({method: metrics}, {method: reconstruction}).
+    fit time. Without a ground truth (real data) only the times are reported.
+    Returns ({method: metrics}, {method: reconstruction}).
     """
-    gt = environment.ground_truth.gas_map
+    gt = environment.ground_truth.gas_map if environment.ground_truth is not None else None
     system_matrix, matrix_time = None, None
     if any(AVAILABLE_METHODS[m].get("needs_matrix") for m in methods):
+        grid_shape = (round(cfg.env.map_size[1] / cfg.env.cell_size), round(cfg.env.map_size[0] / cfg.env.cell_size))
         t_start = time.time()
-        system_matrix = create_system_matrix_sparse(gt.shape, batch.beams.cpu().numpy(), cfg.env.cell_size)
+        system_matrix = create_system_matrix_sparse(grid_shape, batch.beams.cpu().numpy(), cfg.env.cell_size)
         matrix_time = time.time() - t_start
 
     metrics, preds = {}, {}
     for name in methods:
         pred, solve_time = AVAILABLE_METHODS[name]["func"](batch=batch, cfg=cfg, environment=environment,
                                                            system_matrix=system_matrix)
-        metrics[name] = {**gas_map_metrics(gt, pred, environment.obstacles, cfg.env.cell_size), "time": solve_time,
+        map_metrics = gas_map_metrics(gt, pred, environment.obstacles, cfg.env.cell_size) if gt is not None else {}
+        metrics[name] = {**map_metrics, "time": solve_time,
                          "matrix_time": matrix_time if AVAILABLE_METHODS[name].get("needs_matrix") else None}
         preds[name] = pred
     return metrics, preds
