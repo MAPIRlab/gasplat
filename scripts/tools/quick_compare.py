@@ -13,6 +13,7 @@ map shares its color scale, and the NRMSE of each method is shown.
 """
 import os
 import sys
+import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -25,7 +26,7 @@ from methods.registry import AVAILABLE_METHODS
 from utils.scenario_sets import case_name
 from utils.sim_utils import generate_simulation_data
 from utils.plot_utils import draw_beams, set_publication_style
-from utils.experiment_utils import run_methods
+from utils.experiment_utils import RUN_THREADS, run_methods
 
 
 def main():
@@ -37,6 +38,7 @@ def main():
     cfg.quiet = True
     cfg.train.do_eval = False
     cfg.train.live_vis = False
+    torch.set_num_threads(RUN_THREADS)
     set_publication_style()
 
     batch, environment = generate_simulation_data(cfg)

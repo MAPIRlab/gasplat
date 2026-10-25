@@ -1,3 +1,4 @@
+import torch
 from simple_parsing import ArgumentParser
 
 from config import Config
@@ -5,7 +6,7 @@ from trainer import Trainer
 from utils.init_utils import setup_gs_model
 from utils.plot_utils import plot_initial_guess, plot_training_results, set_publication_style
 from utils.sim_utils import generate_simulation_data
-from utils.experiment_utils import save_experiment_results
+from utils.experiment_utils import RUN_THREADS, save_experiment_results
 
 def main():
     # --- Configuration ---
@@ -14,6 +15,7 @@ def main():
     args = parser.parse_args()
     cfg: Config = args.cfg
     quiet = cfg.quiet
+    torch.set_num_threads(RUN_THREADS)
 
     set_publication_style()
 

@@ -99,8 +99,8 @@ def main():
     parser.add_argument("--factors", nargs="+", type=float, default=[0.25, 0.5, 1, 2, 4, 8],
                         help="Multiples of the current value to try when --values is not given")
     add_case_arguments(parser)
-    parser.add_argument("--workers", type=int, default=default_workers(),
-                        help="Runs in parallel (default: one per GPU, so that no run waits for another)")
+    parser.add_argument("--workers", type=int, default=None,
+                        help="Runs in parallel (default: one per GPU, or as many as the CPU cores allow)")
     args = parser.parse_args()
     if args.values and len(args.params) > 1:
         sys.exit("--values can only be used with a single parameter")
@@ -112,6 +112,7 @@ def main():
     set_publication_style()
 
     cases = get_cases(args.set, args.seeds, cfg.sim.scenario)
+    workers = args.workers or default_workers(cfg)
     scenarios = [c.name for c in cases]
 
     for name in args.params:
@@ -138,7 +139,7 @@ def main():
 
         os.makedirs(RESULTS_DIR, exist_ok=True)
         with open(progress, "a") as f:
-            for key, metrics, _ in tqdm(yield_scenario_runs(tasks, args.workers), total=len(tasks),
+            for key, metrics, _ in tqdm(yield_scenario_runs(tasks, workers), total=len(tasks),
                                         desc=f"Sweep {group}.{attr}"):
                 runs[key] = metrics
                 f.write(json.dumps({"value": key[0], "scenario": key[1], "metrics": metrics}) + "\n")

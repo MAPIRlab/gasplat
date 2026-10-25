@@ -45,8 +45,8 @@ def main():
     parser = ArgumentParser(description="Benchmark GASPLAT on a set of GADEN scenarios")
     parser.add_arguments(Config, dest="cfg")
     add_case_arguments(parser)
-    parser.add_argument("--workers", type=int, default=default_workers(),
-                        help="Runs in parallel (default: one per GPU, so that no run waits for another)")
+    parser.add_argument("--workers", type=int, default=None,
+                        help="Runs in parallel (default: one per GPU, or as many as the CPU cores allow)")
     args = parser.parse_args()
     cfg: Config = args.cfg
     cfg.quiet = True
@@ -55,11 +55,12 @@ def main():
 
     set_publication_style()
     cases = get_cases(args.set, args.seeds, cfg.sim.scenario)
+    workers = args.workers or default_workers(cfg)
     label = cases_label(args.set, args.seeds, cfg.sim.scenario)
     tasks = [(c.name, c.apply(cfg)) for c in cases]
 
     metrics, maps = {}, {}
-    for name, m, case_maps in tqdm(yield_scenario_runs(tasks, args.workers), total=len(tasks), desc="Scenarios"):
+    for name, m, case_maps in tqdm(yield_scenario_runs(tasks, workers), total=len(tasks), desc="Scenarios"):
         metrics[name], maps[name] = m, case_maps
 
     names = [c.name for c in cases]

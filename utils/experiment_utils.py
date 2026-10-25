@@ -41,6 +41,9 @@ def save_experiment_results(metadata, results, folder="results"):
 
 # Thread pools of the numerical libraries, read once when they are loaded
 THREAD_VARIABLES = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
+# CPU threads of a run. More slow GASPLAT down (many small operations: 3.6 s per tuning
+# house with 2-4 threads, 12.8 s with 16) and LFD/LTD too
+RUN_THREADS = 4
 
 
 def setup_worker_env(threads: int = 1):
@@ -202,9 +205,12 @@ def _run_task(task):
     return key, result, cfg.device_type
 
 
-def default_workers() -> int:
-    """One worker per GPU (runs sharing a GPU only take longer each), or 4 on the CPU."""
-    return torch.cuda.device_count() or 4
+def default_workers(cfg: Config) -> int:
+    """On the GPU, one worker per GPU (runs sharing a GPU only take longer each); on the
+    CPU, as many as fit with RUN_THREADS threads each."""
+    if cfg.device.type == "cuda":
+        return max(1, torch.cuda.device_count())
+    return max(1, (os.cpu_count() or 1) // RUN_THREADS)
 
 
 def yield_runs(func, tasks: list[tuple], max_workers: int = 4, warmup: bool = False):
@@ -214,16 +220,17 @@ def yield_runs(func, tasks: list[tuple], max_workers: int = 4, warmup: bool = Fa
     func must be defined at module level. The processes are spawned rather than
     forked, so that each one can use CUDA, and the runs are spread over all the
     available GPUs. A run that does not fit in GPU memory is repeated on the
-    CPU. The CPU cores are shared out among the workers, so that their thread
-    pools do not oversubscribe the machine. With warmup, every process makes a
-    throwaway run before its first timed one.
+    CPU. Every worker gets RUN_THREADS CPU threads, fewer if the cores do not
+    go round, so that their thread pools do not oversubscribe the machine. With
+    warmup, every process makes a throwaway run before its first timed one.
 
-    Times: a single worker keeps every run on the same GPU, so that times are
-    comparable; with one worker per GPU no run waits for another; with more
-    workers than GPUs, runs share a GPU and their times grow accordingly.
+    Times: with a single worker, runs do not compete for cores and every run on
+    the GPU uses the same one, so that times are comparable; with one worker per
+    GPU no run waits for another; with more workers than GPUs, runs share a GPU
+    and their times grow accordingly.
     """
     num_gpus = torch.cuda.device_count()
-    threads = max(1, (os.cpu_count() or 1) // max_workers)
+    threads = max(1, min(RUN_THREADS, (os.cpu_count() or 1) // max_workers))
     saved = {v: os.environ.get(v) for v in THREAD_VARIABLES}
     os.environ.update({v: str(threads) for v in THREAD_VARIABLES})  # inherited by the spawned workers
     try:

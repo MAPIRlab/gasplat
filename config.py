@@ -72,8 +72,10 @@ class Config:
     # Global flag to silence console output
     quiet: bool = field(default=False, action="store_true")
 
-    # "cuda" if available, "cpu" otherwise. Can be overwritten
-    device_type: str = "cuda" if torch.cuda.is_available() else "cpu"
+    # GASPLAT's many small operations run faster on a few CPU threads than on a GPU,
+    # where launching them dominates (tuning set: 3.6 s per house with 4 threads, 5.5 s
+    # on the GPU). "cuda" to use the GPU
+    device_type: str = "cpu"
 
     @property
     def device(self) -> torch.device:
