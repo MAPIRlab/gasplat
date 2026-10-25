@@ -16,7 +16,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 from config import Config
 from trainer import Trainer
 from gs_model import GasSplattingModel
-from utils.experiment_utils import rmse_loss, save_experiment_results
+from utils.experiment_utils import save_experiment_results
 from utils.init_utils import setup_gs_model
 from utils.obstacle_utils import SCENARIOS, create_obstacle_scenario, obstacle_mask_to_geometry
 from utils.sim_utils import (
@@ -159,7 +159,7 @@ def calculate_metrics(
         "obstacle_max": float(np.max(final_map[occupied])) if occupied.any() else 0.0,
         "free_mae": float(np.sum(np.abs(final_map[free] - ground_truth[free])) / free_area),
         "boundary_mae": float(np.sum(np.abs(final_map[boundary] - ground_truth[boundary])) / boundary_area),
-        "global_rmse": float(rmse_loss(ground_truth, final_map)),
+        "global_rmse": float(np.sqrt(np.mean((final_map - ground_truth) ** 2))),
         "data_mae": data_mae,
         "num_gaussians": model.num_gaussians,
     }

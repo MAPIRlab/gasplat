@@ -6,7 +6,6 @@ import datetime
 import multiprocessing
 import torch
 import numpy as np
-from skimage.metrics import structural_similarity as ssim
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from config import Config
@@ -50,20 +49,6 @@ def setup_worker_env(threads: int = 1):
     starting the workers."""
     torch.set_num_threads(threads)
 
-def rmse_loss(img_gt, img_pred):
-    return np.sqrt(np.mean((img_pred - img_gt)**2))
-
-def calculate_metrics(gt_img, res_img):
-    """Returns RMSE and SSIM for a given estimation."""
-    rmse = rmse_loss(gt_img, res_img)
-    data_range = gt_img.max() - gt_img.min()
-    
-    # Prevent ssim from breaking if the map is completely flat
-    data_range = data_range if data_range > 0 else 1.0
-    
-    ssim_val = ssim(gt_img, res_img, data_range=data_range)
-    return rmse, ssim_val
-
 # ==========================================
 #            SCENARIO EXPERIMENTS
 # ==========================================
@@ -78,7 +63,6 @@ def gas_map_metrics(gt: np.ndarray, pred: np.ndarray, obstacles: np.ndarray | No
         units of cell_size (meters for scenarios).
     mass_error: relative error of the total amount of gas.
     leak: fraction of the reconstructed gas that lies inside obstacles.
-    ssim: structural similarity of both maps with the obstacles set to zero.
     """
     free = np.ones(gt.shape, dtype=bool) if obstacles is None else ~(obstacles > 0.5)
     g, p = gt[free], pred[free]
@@ -93,7 +77,6 @@ def gas_map_metrics(gt: np.ndarray, pred: np.ndarray, obstacles: np.ndarray | No
         "peak_distance": float(np.hypot(true_max[0] - pred_max[0], true_max[1] - pred_max[1])) * cell_size,
         "mass_error": float(p.sum() - g.sum()) / max(float(g.sum()), 1e-12),
         "leak": float(pred[~free].sum()) / max(float(pred.sum()), 1e-12),
-        "ssim": float(ssim(np.where(free, gt, 0.0), np.where(free, pred, 0.0), data_range=peak)),
     }
 
 
