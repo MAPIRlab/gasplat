@@ -252,32 +252,27 @@ class GasSplattingModel(nn.Module):
         x = (torch.arange(w_cells, device=device) + 0.5) * cell_size
         y = (torch.arange(h_cells, device=device) + 0.5) * cell_size
         X, Y = torch.meshgrid(x, y, indexing='xy')
-        grid_pos = torch.stack([X, Y], dim=-1) # (H, W, 2)
+        cells = torch.stack([X, Y], dim=-1).reshape(-1, 2) # (H*W, 2), row-major (H, W)
 
-        # PyTorch expects (H, W) -> (h_cells, w_cells)
-        final_img = torch.zeros((h_cells, w_cells), device=device)
+        final_img = torch.zeros(cells.shape[0], device=device)
 
         with torch.no_grad():
             pos = self.get_pos()
             cov_inv = self.get_covariance_inverse()
             concentration = self.get_concentration()
 
-            # Sum each Gaussian contribution
-            for k in range(self.num_gaussians):
-                mu = pos[k]
-                sig_inv = cov_inv[k]
-                c = concentration[k]
-                
-                # Evaluate Gaussian at each cell
-                d = grid_pos - mu
-                d = d.unsqueeze(-1) 
-                
-                sig_inv_exp = sig_inv.view(1, 1, 2, 2)
-                dist = torch.matmul(d.transpose(-1, -2), torch.matmul(sig_inv_exp, d)).squeeze()
-                
-                final_img += c * torch.exp(-0.5 * dist)
+            # All Gaussians at once, in chunks that keep the (cells, Gaussians) arrays within ~1M entries
+            chunk = max(1, 2**20 // max(cells.shape[0], 1))
+            for k0 in range(0, self.num_gaussians, chunk):
+                k = slice(k0, k0 + chunk)
+                dx = cells[:, :1] - pos[k, 0]   # (H*W, C)
+                dy = cells[:, 1:] - pos[k, 1]
+                dist = (cov_inv[k, 0, 0] * dx * dx + (cov_inv[k, 0, 1] + cov_inv[k, 1, 0]) * dx * dy
+                        + cov_inv[k, 1, 1] * dy * dy)
+                final_img += (concentration[k] * torch.exp(-0.5 * dist)).sum(dim=1)
 
-        return final_img.detach().cpu().numpy()
+        # PyTorch expects (H, W) -> (h_cells, w_cells)
+        return final_img.reshape(h_cells, w_cells).cpu().numpy()
 
     # -------- DENSIFICATION ----------
 
