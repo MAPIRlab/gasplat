@@ -135,7 +135,7 @@ def injection_stages(beams, residuals, predictions, min_dist, existing_pos):
     lengths = torch.clamp(torch.norm(beams[:, 1] - beams[:, 0], dim=1), min=1e-5)
     score = residuals / lengths
     admitted_scores = score[admitted]
-    threshold = admitted_scores.mean() + admitted_scores.std()
+    threshold = torch.clamp(admitted_scores.mean() + admitted_scores.std(), max=admitted_scores.max())
     candidate = admitted & (score >= threshold)
     cand_idx = torch.where(candidate)[0]
 

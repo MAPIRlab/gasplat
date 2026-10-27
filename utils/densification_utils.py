@@ -70,7 +70,9 @@ def extract_candidate_positions(
 
     admitted_scores = normalized_scores[admitted]
     spread = torch.std(admitted_scores) if num_admitted > 1 else 0.0
-    threshold = torch.mean(admitted_scores) + spread
+    # The cut never exceeds the best admitted beam: with scores skewed to the low side
+    # the mean plus one standard deviation can lie above all of them
+    threshold = torch.clamp(torch.mean(admitted_scores) + spread, max=admitted_scores.max())
 
     candidate_mask = admitted & (normalized_scores >= threshold)
     candidate_indices = torch.where(candidate_mask)[0]
