@@ -1,4 +1,5 @@
 import os
+import math
 import time
 import torch
 import numpy as np
@@ -174,6 +175,7 @@ class Trainer:
         self.model.update_accum_gradient(self.buffer_beams)
 
         total_loss = data_loss.item()
+        self.last_data_loss = total_loss
 
         # --- Obstacle penalty L_obs (ESDF and AA-SDF terms, complementary) ---
         use_obstacles = (self.esdf_tensor is not None
@@ -303,6 +305,14 @@ class Trainer:
         ema_loss = None
         best_ema_loss = float('inf')
         patience_counter = 0
+        # Discrepancy principle: with a known noise level, stop once the data residual is as large as the
+        # noise, since fitting further fits the noise. A reading y with an error of std sigma*y has an
+        # expected absolute error of sqrt(2/pi)*sigma*y, so the data loss (mean absolute residual over
+        # the concentration scale) reaches the noise at this level
+        ema_data_loss, discrepancy = None, None
+        if self.cfg.train.noise_level:
+            discrepancy = (math.sqrt(2 / math.pi) * self.cfg.train.noise_level
+                           * float(self.buffer_measurements.abs().mean()) / float(self.model.scale))
 
         # Training timer
         batch_time = 0.0
@@ -321,6 +331,16 @@ class Trainer:
                 ema_loss = current_loss
             else:
                 ema_loss = (self.cfg.train.ema_alpha * current_loss) + ((1 - self.cfg.train.ema_alpha) * ema_loss)
+
+            if discrepancy is not None:
+                a = self.cfg.train.ema_alpha
+                ema_data_loss = (self.last_data_loss if ema_data_loss is None
+                                 else a * self.last_data_loss + (1 - a) * ema_data_loss)
+                if iteration > self.cfg.densify.densify_from and ema_data_loss <= discrepancy:
+                    batch_time += (time.time() - t_start)
+                    if not self.cfg.quiet:
+                        tqdm.write(f"Stopped at iteration {iteration}: the data residual reached the noise level")
+                    break
 
             if iteration > self.cfg.densify.densify_until:
                 # Check for significant improvement

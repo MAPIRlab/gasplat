@@ -48,6 +48,7 @@ class TrainParams:
     early_stopping_patience: int = 50       # How many iterations to wait for an improvement
     early_stopping_min_delta: float = 2e-2  # Minimum relative improvement of the smoothed loss that resets the patience counter
     ema_alpha: float = 0.6                  # Smoothing factor (Lower = smoother, more memory of past loss)
+    noise_level: Optional[float] = None     # Known relative std of the measurement noise (fraction of each reading). If set, training stops once the smoothed data residual reaches it (discrepancy principle)
 
     do_eval: bool = field(default=False, action="store_true") # Evaluate model during training using ground truth
     eval_interval: int = 25 # Model evaluation interval
