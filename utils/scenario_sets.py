@@ -61,9 +61,10 @@ SETS = {"tuning": TUNING, "held_out": HELD_OUT, "all": TUNING + HELD_OUT, "simpl
         "procedural": PROCEDURAL_SEEDS}
 
 
-def scenario_dirs(set_name: str, root: str = DEFAULT_ROOT) -> list[str]:
-    """Scenario package directories of a GADEN set, in the order listed above."""
-    return [os.path.join(root, entry if isinstance(entry, str) else scenario_name(*entry, HEIGHT, ITERATION))
+def scenario_dirs(set_name: str, root: str = DEFAULT_ROOT, iteration: int = ITERATION) -> list[str]:
+    """Scenario package directories of a GADEN set, in the order listed above. The VGR
+    houses use the snapshot `iteration` (every 0.5 s; the last, 1999, is the default)."""
+    return [os.path.join(root, entry if isinstance(entry, str) else scenario_name(*entry, HEIGHT, iteration))
             for entry in SETS[set_name]]
 
 
@@ -91,7 +92,7 @@ def case_name(cfg: Config) -> str:
 
 
 def get_cases(set_name: str | None = None, seeds: list[int] | None = None, scenario: str | None = None,
-              root: str = DEFAULT_ROOT) -> list[Case]:
+              root: str = DEFAULT_ROOT, iteration: int = ITERATION) -> list[Case]:
     """Procedural maps for the given seeds, else the single scenario package, else the cases of a set."""
     if seeds:
         return [Case(f"procedural_seed{s}", seed=s) for s in seeds]
@@ -100,19 +101,23 @@ def get_cases(set_name: str | None = None, seeds: list[int] | None = None, scena
     elif set_name == "procedural":
         return [Case(f"procedural_seed{s}", seed=s) for s in PROCEDURAL_SEEDS]
     else:
-        cases = [Case(os.path.basename(d), scenario=d) for d in scenario_dirs(set_name, root)]
+        cases = [Case(os.path.basename(d), scenario=d) for d in scenario_dirs(set_name, root, iteration)]
     missing = [c.name for c in cases if not os.path.exists(os.path.join(c.scenario, "scenario.npz"))]
     if missing:
         tool = "simulate_gaden.py" if set_name == "simple" else "make_scenarios.py"
-        raise SystemExit(f"Missing scenarios: {', '.join(missing)}. Create them with scripts/tools/{tool}")
+        hint = f" --iteration {iteration}" if iteration != ITERATION else ""
+        raise SystemExit(f"Missing scenarios: {', '.join(missing)}. Create them with scripts/tools/{tool}{hint}")
     return cases
 
 
-def cases_label(set_name: str, seeds: list[int] | None = None, scenario: str | None = None) -> str:
+def cases_label(set_name: str, seeds: list[int] | None = None, scenario: str | None = None,
+                iteration: int = ITERATION) -> str:
     """Name of what get_cases runs, for the result and plot files."""
     if seeds:
         return "procedural"
-    return os.path.basename(os.path.normpath(scenario)) if scenario else set_name
+    if scenario:
+        return os.path.basename(os.path.normpath(scenario))
+    return set_name if iteration == ITERATION else f"{set_name}_it{iteration}"
 
 
 def add_case_arguments(parser, default_set: str = "tuning"):
