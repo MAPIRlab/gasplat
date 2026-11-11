@@ -4,19 +4,6 @@ from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
 
-SCENARIOS = (
-    "none",
-    "small_square",
-    "large_square",
-    "vertical_wall",
-    "two_blocks",
-    "l_shape",
-    "u_shape",
-    "circle",
-    "boundary_wall",
-)
-
-
 def add_rectangle(
     obstacles: np.ndarray,
     x_min: float,
