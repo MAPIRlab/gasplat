@@ -27,6 +27,8 @@ class SimulationParams:
     min_crossing_angle: float = 30.0 # A free cell is covered once beams from two poses cross it at least this angle apart (deg)
     coverage: float = 0.8 # Fraction of free cells to cover when num_poses is None
     beam_fov: float = 360.0 # Angular sweep at each pose (deg)
+    random_poses: bool = field(default=False, action="store_true") # Place the poses at random instead (as many as num_poses or the coverage target asks for)
+    min_pose_spacing: float = 1.0 # Minimum distance between random poses (m)
 
 @dataclass
 class TrainParams:

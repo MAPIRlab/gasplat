@@ -167,6 +167,55 @@ def generate_simple_beams(map_size_m: tuple[float, float], num_beams: int,
 #          VANTAGE-POINT BEAMS
 # ==========================================
 
+def vantage_candidates(obstacles: np.ndarray, cell_size: float, min_clearance: float = 0.3,
+                       spacing: float = 0.3) -> tuple[np.ndarray, np.ndarray]:
+    """Positions where the robot can stop: free cells on a grid of `spacing` m with at
+    least `min_clearance` m to any obstacle, in the largest connected free region.
+
+    Returns the (C, 2) positions in meters and the (H, W) mask of that region.
+    """
+    from scipy.ndimage import distance_transform_edt, label
+
+    free = ~obstacles.astype(bool)
+    labels, n = label(free)
+    if n == 0:
+        raise ValueError("The map has no free space.")
+    reachable = labels == 1 + np.argmax(np.bincount(labels.ravel())[1:])
+    # pad with obstacles so the map border also counts for clearance
+    # (center-to-center EDT minus half a cell = distance to the obstacle surface)
+    clearance = (distance_transform_edt(np.pad(free, 1))[1:-1, 1:-1] - 0.5) * cell_size
+
+    stride = max(1, round(spacing / cell_size))
+    grid = np.zeros_like(free)
+    grid[stride // 2::stride, stride // 2::stride] = True
+    rows, cols = np.nonzero(grid & reachable & (clearance >= min_clearance))
+    if len(rows) == 0:
+        raise ValueError(f"No candidate pose with {min_clearance} m clearance.")
+    return np.stack([(cols + 0.5) * cell_size, (rows + 0.5) * cell_size], axis=1), reachable
+
+
+def random_vantage_poses(obstacles: np.ndarray, cell_size: float, num_poses: int,
+                         min_clearance: float = 0.3, min_spacing: float = 1.0,
+                         rng: np.random.Generator | None = None, tries: int = 100) -> np.ndarray:
+    """num_poses positions drawn at random among the candidates of vantage_candidates,
+    at least `min_spacing` m apart.
+
+    The candidates are visited in a random order and each one is kept if it is far
+    enough from those already kept; if fewer than num_poses fit, a new order is drawn.
+    Returns (num_poses, 2) positions in meters.
+    """
+    rng = rng or np.random.default_rng()
+    cand, _ = vantage_candidates(obstacles, cell_size, min_clearance)
+    for _ in range(tries):
+        chosen = []
+        for i in rng.permutation(len(cand)):
+            if all(np.hypot(*(cand[i] - cand[j])) >= min_spacing for j in chosen):
+                chosen.append(i)
+                if len(chosen) == num_poses:
+                    return cand[chosen]
+    raise ValueError(f"Could not place {num_poses} poses {min_spacing} m apart.")
+
+
 def select_vantage_poses(obstacles: np.ndarray, cell_size: float,
                          num_poses: int | None = None, min_clearance: float = 0.3,
                          max_range: float = 30.0, min_angle: float = 30.0,
@@ -195,25 +244,8 @@ def select_vantage_poses(obstacles: np.ndarray, cell_size: float,
 
     Returns (P, 2) positions in meters.
     """
-    from scipy.ndimage import distance_transform_edt, label
-
     H, W = obstacles.shape
-    free = ~obstacles.astype(bool)
-    labels, n = label(free)
-    if n == 0:
-        raise ValueError("The map has no free space.")
-    reachable = labels == 1 + np.argmax(np.bincount(labels.ravel())[1:])
-    # pad with obstacles so the map border also counts for clearance
-    # (center-to-center EDT minus half a cell = distance to the obstacle surface)
-    clearance = (distance_transform_edt(np.pad(free, 1))[1:-1, 1:-1] - 0.5) * cell_size
-
-    stride = max(1, round(spacing / cell_size))
-    grid = np.zeros_like(free)
-    grid[stride // 2::stride, stride // 2::stride] = True
-    rows, cols = np.nonzero(grid & reachable & (clearance >= min_clearance))
-    if len(rows) == 0:
-        raise ValueError(f"No candidate pose with {min_clearance} m clearance.")
-    cand = np.stack([(cols + 0.5) * cell_size, (rows + 0.5) * cell_size], axis=1)
+    cand, reachable = vantage_candidates(obstacles, cell_size, min_clearance, spacing)
 
     target = reachable.ravel()
     vis = visible_cells(cand, obstacles, cell_size, max_range) & target   # (C, H*W)
@@ -436,7 +468,9 @@ def generate_scenario_data(cfg: Config, beam_rng: np.random.Generator) -> tuple[
 
     Uses cfg.sim.scenario (package directory) and the vantage-point fields of
     cfg.sim (num_poses, angular_step, beam_fov, min_clearance, max_range,
-    min_crossing_angle, coverage). cfg.sim.num_beams is not used: the number
+    min_crossing_angle, coverage, random_poses, min_pose_spacing). With
+    random_poses, the poses are drawn at random (random_vantage_poses), as many
+    as select_vantage_poses would place. cfg.sim.num_beams is not used: the number
     of beams follows from the poses the map needs and the angular resolution
     of the sweep. The distribution is quasi-static, so every beam integrates
     the same snapshot, which is also the ground truth.
@@ -454,6 +488,10 @@ def generate_scenario_data(cfg: Config, beam_rng: np.random.Generator) -> tuple[
     poses = cached_vantage_poses(cfg.sim.scenario, obstacles, cfg.env.cell_size, cfg.sim.num_poses,
                                  cfg.sim.min_clearance, cfg.sim.max_range, cfg.sim.min_crossing_angle,
                                  cfg.sim.coverage)
+    if cfg.sim.random_poses:
+        # As many poses as the coverage target (or num_poses) asks for, placed at random
+        poses = random_vantage_poses(obstacles, cfg.env.cell_size, len(poses), cfg.sim.min_clearance,
+                                     cfg.sim.min_pose_spacing, rng=beam_rng)
     beams_list, pose_ids, poses = generate_vantage_beams(
         obstacles, cfg.env.cell_size, cfg.sim.angular_step, poses=poses,
         num_poses=cfg.sim.num_poses,
