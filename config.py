@@ -17,6 +17,8 @@ class SimulationParams:
     noise: bool = field(default=False, action="store_true") # Add noise to simulated measurements
     snr_db: int = 30 # Signal-to-noise ratio (dB)
     noise_floor: float = 0.0 # Absolute noise std added on top of the SNR noise (ppm*m)
+    noise_model: str = "additive" # additive: same std for every beam (snr_db, noise_floor); proportional: std = noise_level * each beam's value
+    noise_level: float = 0.05 # Relative std of the proportional noise
 
     # --- GADEN scenarios (see utils/gaden_utils.py) ---
     scenario: Optional[str] = None # Scenario package directory. Overrides map/cell size. If None, a procedural map is generated

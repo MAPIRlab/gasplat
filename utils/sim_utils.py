@@ -399,6 +399,16 @@ def add_measurement_noise(y_true, snr_db=30, abs_std=0.0, rng: np.random.Generat
     y_noisy[y_noisy < 0] = 0
     return torch.tensor(y_noisy, dtype=torch.float32, device=y_true.device)
 
+def add_proportional_noise(y_true, level: float, rng: np.random.Generator | None = None):
+    """Multiplicative Gaussian noise: each measurement y gets an error of standard
+    deviation level * y, y (1 + level z) with z ~ N(0, 1). The same rng gives the same
+    z for any level, so that levels differ only in the size of the error. Negative
+    readings (z < -1/level, about 3e-7 of them at level 0.2) are clipped to 0."""
+    rng = rng or np.random.default_rng()
+    y = y_true.cpu().numpy()
+    y_noisy = np.maximum(y * (1.0 + level * rng.standard_normal(y.shape)), 0.0)
+    return torch.tensor(y_noisy, dtype=torch.float32, device=y_true.device)
+
 def simulation_rngs(seed: int | None) -> tuple[np.random.Generator, ...]:
     """Independent generators for the gas map, the beams and the noise.
 
@@ -421,7 +431,9 @@ def generate_simulation_data(cfg: Config) -> tuple[MeasurementBatch, Environment
 
     Simulated measurements are exact integrals of the ground truth, plus noise
     if cfg.sim.noise (cfg.sim.snr_db and cfg.sim.noise_floor); the ground truth
-    keeps the noise-free ones (y_true). The gas map, beams and noise draw from
+    keeps the noise-free ones (y_true). cfg.sim.noise_model chooses the noise:
+    "additive" (add_measurement_noise) or "proportional" (add_proportional_noise,
+    cfg.sim.noise_level). The gas map, beams and noise draw from
     independent streams of cfg.sim.seed (simulation_rngs).
     """
     from utils.real_data_utils import is_real_scenario, load_real_scenario
@@ -436,9 +448,13 @@ def generate_simulation_data(cfg: Config) -> tuple[MeasurementBatch, Environment
         batch, environment = generate_procedural_data(cfg, map_rng, beam_rng)
 
     if cfg.sim.noise and len(batch.measurements) > 0:
-        if not cfg.quiet: print(f"Adding noise to the measurements ({cfg.sim.snr_db} dB)...")
-        batch.measurements = add_measurement_noise(batch.measurements, snr_db=cfg.sim.snr_db,
-                                                   abs_std=cfg.sim.noise_floor, rng=noise_rng)
+        if cfg.sim.noise_model == "proportional":
+            if not cfg.quiet: print(f"Adding proportional noise to the measurements ({100 * cfg.sim.noise_level:g}%)...")
+            batch.measurements = add_proportional_noise(batch.measurements, cfg.sim.noise_level, rng=noise_rng)
+        else:
+            if not cfg.quiet: print(f"Adding noise to the measurements ({cfg.sim.snr_db} dB)...")
+            batch.measurements = add_measurement_noise(batch.measurements, snr_db=cfg.sim.snr_db,
+                                                       abs_std=cfg.sim.noise_floor, rng=noise_rng)
     return batch, environment
 
 def generate_procedural_data(cfg: Config, map_rng: np.random.Generator,
