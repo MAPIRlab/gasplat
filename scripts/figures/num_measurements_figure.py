@@ -1,21 +1,24 @@
-"""Paper figure of the experiment on the number of measurements, from its results.
+"""Paper figures of the experiment on the number of measurements, from its results.
 
-Top row: one case of the experiment at one of its steps (--step): (a) the ground
-truth with the beams (faint, so that the ground truth stays visible) and the
-poses, (b) GASPLAT, (c) the strongest baseline (--baseline, default LFD), all from
-the same measurements, regenerated with the configuration of the experiment.
-Bottom row: (d) NRMSE and (e) computation time of every method along the axis of
-the experiment (poses, angular step or beams), mean and one standard deviation
-over the sweep headings (over the seeds for procedural maps). The time of a grid
-method includes the construction of its system matrix, so every time covers the
-whole reconstruction from the measurements to the map.
+Quantitative figure (<output>.pdf): (a) the ground truth with every pose of the
+experiment, numbered in the order the poses are added (fewer poses are always the
+first ones), (b) NRMSE and (c) computation time of every method along the axis of
+the experiment (poses, angular step or beams), mean and one standard deviation over
+the sweep headings (over the seeds for procedural maps). The time of a grid method
+includes the construction of its system matrix, so every time covers the whole
+reconstruction from the measurements to the map.
 
-Paper figure (side plume, 4 poses):
+Qualitative figure (<output>_maps.pdf, pose axis only): one row per number of poses
+(--map_steps), with the ground truth and the beams, then the reconstruction of every
+method from those measurements (sweep headings --seed), regenerated with the
+configuration of the experiment. All maps share the colour scale of the ground truth.
+
+Paper figures (side plume):
     python scripts/experiments/num_measurements.py --scenario data/scenarios/10x6_empty_room_side_plume_h0.75_t1000 \\
         --poses 2 3 4 6 8 12 16 --repeats 5 --workers 1
     python scripts/figures/num_measurements_figure.py \\
-        results/num_measurements_10x6_empty_room_side_plume_h0.75_t1000_poses_<date>.json --step 4 \\
-        --output plots/num_measurements_side_plume
+        results/num_measurements_10x6_empty_room_side_plume_h0.75_t1000_poses_<date>.json \\
+        --output plots/num_measurements_side_plume --copy_to ~/paper/figs
 """
 import os
 import sys
@@ -108,113 +111,171 @@ def draw_map(ax, img, obstacles, extent, vmax, title):
     ax.set_title(title, pad=3)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Figure of the experiment on the number of measurements")
-    parser.add_argument("results", help="Results of scripts/experiments/num_measurements.py (JSON)")
-    parser.add_argument("--case", default=None, help="Case shown in the top row (default: the first of the experiment)")
-    parser.add_argument("--step", type=float, default=None,
-                        help="Step of the experiment shown in the top row (default: the middle one)")
-    parser.add_argument("--baseline", default="LFD", choices=[m for m in AVAILABLE_METHODS if m != "Gas Splatting"])
-    parser.add_argument("--seed", type=int, default=0, help="Sweep headings of the reconstructions shown (GADEN)")
-    parser.add_argument("--output", default=None, help="Output path without extension (default: plots/<experiment name>)")
-    parser.add_argument("--copy_to", default=None, help="Also copy the PDF here (e.g. the paper's figs folder)")
-    args = parser.parse_args()
+def style_kw(m: str) -> dict:
+    style = AVAILABLE_METHODS[m]["style"]
+    gs = m == "Gas Splatting"
+    return dict(color=style["color"], marker=style["marker"], lw=1.8 if gs else 1.1, ms=7 if gs else 4.5, label=label(m))
 
-    data = json.load(open(args.results))
+
+def pose_positions(batch) -> np.ndarray:
+    """Common origin of the beams of each pose, in the order of the pose ids (the order they are added)."""
+    beams, ids = batch.beams.cpu().numpy(), batch.pose_ids.cpu().numpy()
+    return np.array([beams[ids == p][0, 0] for p in np.unique(ids)])
+
+
+def quantitative_figure(data, case, cfg, axis, output):
     meta = data["metadata"]
-    axis = meta.get("axis") or AXES[meta["step_unit"]]
     steps = meta["steps"]
-    step = args.step if args.step is not None else steps[len(steps) // 2]
-    if step not in steps:
-        sys.exit(f"--step must be one of the steps of the experiment: {steps}")
-    case = case_of(meta, args.case or meta["cases"][0])
-    if case.name not in meta["cases"]:
-        sys.exit(f"--case must be one of the cases of the experiment: {meta['cases']}")
     procedural = case.scenario is None
+    x_steps, n_beams, curve = curves(data, meta["cases"] if procedural else [case.name])
+    x = x_steps if axis == "poses" else n_beams
 
-    # --- Reconstructions at one step ---
-    cfg = case.apply(experiment_config(meta))
-    if not procedural:
-        cfg.sim.seed = args.seed
-    batch, environment = measurements_at(cfg, step, axis)
-    metrics, preds = run_methods(batch, environment, cfg, ["Gas Splatting", args.baseline])
+    # Ground truth and every pose of the experiment (its largest step)
+    batch, environment = measurements_at(cfg, max(steps) if axis == "poses" else steps[-1], axis)
     gt = environment.ground_truth.gas_map
     obstacles = environment.obstacles > 0.5 if environment.obstacles is not None else np.zeros(gt.shape, dtype=bool)
     H, W = gt.shape
     extent = (0, W * cfg.env.cell_size, 0, H * cfg.env.cell_size)
-    vmax = max(gt[~obstacles].max(), *(p[~obstacles].max() for p in preds.values()))
-    beams = batch.beams.cpu().numpy()
 
-    # --- Curves: the case alone, or the mean over the seeds of procedural maps ---
-    x_steps, n_beams, curve = curves(data, meta["cases"] if procedural else [case.name])
-    # x axis: number of poses on the pose axis, number of beams otherwise
-    x = x_steps if axis == "poses" else n_beams
-    marker = x[steps.index(step)]
-
-    fig = plt.figure(figsize=(7.16, 4.5))
-    grid = fig.add_gridspec(2, 1, height_ratios=[1.0, 1.25], hspace=0.38, left=0.02, right=0.98, top=0.95, bottom=0.10)
-    top_row = grid[0].subgridspec(1, 3, wspace=0.12)
-    bottom_row = grid[1].subgridspec(1, 3, wspace=0.42, width_ratios=[1, 1, 0.55])
-    maps = [fig.add_subplot(top_row[0, j]) for j in range(3)]
-    draw_map(maps[0], gt, obstacles, extent, vmax, f"(a) Ground truth, {step_text(step, axis)}")
-    maps[0].add_collection(LineCollection(beams, colors=BEAM_COLOR, linewidths=0.3, alpha=BEAM_ALPHA))
+    fig = plt.figure(figsize=(7.16, 2.35))
+    grid = fig.add_gridspec(1, 3, width_ratios=[1.35, 1, 1], wspace=0.42, left=0.01, right=0.99, top=0.80, bottom=0.30)
+    ax = fig.add_subplot(grid[0, 0])
+    draw_map(ax, gt, obstacles, extent, gt[~obstacles].max(), "(a) Ground truth and poses")
     if batch.pose_ids is not None:
-        ids = batch.pose_ids.cpu().numpy()
-        poses = np.array([beams[ids == p][0, 0] for p in np.unique(ids)])   # common origin of each pose's beams
-        maps[0].scatter(poses[:, 0], poses[:, 1], marker="^", s=28, c="w", edgecolors="k", linewidths=0.6, zorder=3)
-    for ax, (m, letter) in zip(maps[1:], (("Gas Splatting", "b"), (args.baseline, "c"))):
-        draw_map(ax, preds[m], obstacles, extent, vmax, f"({letter}) {label(m)}, NRMSE {100 * metrics[m]['nrmse']:.1f}%")
-    sm = plt.cm.ScalarMappable(cmap=GAS_CMAP, norm=plt.Normalize(0, vmax))
-    cbar = fig.colorbar(sm, ax=maps, fraction=0.015, pad=0.01)
-    cbar.set_label("Concentration (ppm)")
+        poses = pose_positions(batch)
+        span = max(extent[1], extent[3])
+        for i, p in enumerate(poses):
+            # Each pose is a dot; its number sits on it, or is pushed away from a close neighbour
+            # (with a leader line) so that the numbers do not overlap
+            d = np.linalg.norm(poses - p, axis=1)
+            d[i] = np.inf
+            label_at = p
+            if d.min() < 0.06 * span:
+                away = p - poses[np.argmin(d)]
+                label_at = p + 0.05 * span * away / max(np.linalg.norm(away), 1e-9)
+                ax.plot(*zip(p, label_at), color="k", lw=0.5, zorder=3)
+            ax.scatter(*p, s=5, c="k", zorder=4)
+            ax.scatter(*label_at, s=62, c="w", edgecolors="k", linewidths=0.6, zorder=4)
+            ax.text(*label_at, str(i + 1), ha="center", va="center", fontsize=6, zorder=5)
+    sm = plt.cm.ScalarMappable(cmap=GAS_CMAP, norm=plt.Normalize(0, gt[~obstacles].max()))
+    cbar = fig.colorbar(sm, ax=ax, orientation="horizontal", fraction=0.06, pad=0.04, aspect=30)
+    cbar.set_label("Concentration (ppm)", labelpad=1)
+    cbar.ax.tick_params(labelsize=7.5)
 
-    plots = [fig.add_subplot(bottom_row[0, 0]), fig.add_subplot(bottom_row[0, 1])]
+    plots = [fig.add_subplot(grid[0, 1]), fig.add_subplot(grid[0, 2])]
     for ax, key, factor, ylabel in ((plots[0], "nrmse", 100, "NRMSE (% of peak)"),
                                     (plots[1], "time", 1, "Computation time (s)")):
         for m in ORDER:
             if m not in curve:
                 continue
-            style = AVAILABLE_METHODS[m]["style"]
             center, spread = factor * curve[m][key][0], factor * curve[m][key][1]
-            lo, hi = np.maximum(center - spread, 0), center + spread
-            ax.plot(x, center, color=style["color"], marker=style["marker"], lw=1.8 if m == "Gas Splatting" else 1.1,
-                    ms=7 if m == "Gas Splatting" else 4.5, label=label(m))
-            ax.fill_between(x, lo, hi, color=style["color"], alpha=0.15, lw=0)
-        ax.axvline(marker, color="0.5", ls=":", lw=0.8)
+            ax.plot(x, center, **style_kw(m))
+            ax.fill_between(x, np.maximum(center - spread, 0), center + spread, color=style_kw(m)["color"],
+                            alpha=0.15, lw=0)
         ax.set_xscale("log"); ax.set_xticks(x); ax.set_xticklabels([f"{v:.0f}" for v in x]); ax.minorticks_off()
         ax.set_xlabel("Number of poses" if axis == "poses" else "Number of beams")
         ax.set_ylabel(ylabel)
+        ax.set_ylim(bottom=0)
         ax.grid(True, ls="--", alpha=0.3)
         if axis != "beams":   # the other quantity on top
             top = ax.secondary_xaxis("top")
             top.set_xticks(x); top.minorticks_off()
             if axis == "poses":
-                top.set_xticklabels([f"{b:.0f}" for b in n_beams])
+                top.set_xticklabels([f"{b:.0f}" for b in n_beams], fontsize=7.5)
                 top.set_xlabel("Number of beams", labelpad=2)
             else:
-                top.set_xticklabels([f"{s:g}°" for s in steps])
+                top.set_xticklabels([f"{s:g}°" for s in steps], fontsize=7.5)
                 top.set_xlabel("Angular step at each pose", labelpad=2)
-    plots[0].set_ylim(bottom=0)
-    plots[1].set_ylim(bottom=0)
-    for ax, letter in zip(plots, "de"):
-        ax.text(-0.16, 1.17, f"({letter})", transform=ax.transAxes, ha="left", va="bottom")
+    for ax, letter in zip(plots, "bc"):
+        ax.text(-0.3, 1.3, f"({letter})", transform=ax.transAxes, ha="left", va="bottom")
+    fig.legend(*plots[0].get_legend_handles_labels(), loc="lower center", ncol=5, frameon=False,
+               bbox_to_anchor=(0.5, -0.04), columnspacing=1.2, handlelength=2.2)
+    save(fig, output)
 
-    # Legend in the free third column
-    lax = fig.add_subplot(bottom_row[0, 2]); lax.axis("off")
-    lax.legend(*plots[0].get_legend_handles_labels(), loc="center", frameon=False)
 
-    output = args.output or os.path.join("plots", meta["experiment_name"])
+def qualitative_figure(meta, case, cfg, axis, map_steps, output):
+    rows = []
+    for step in map_steps:
+        batch, environment = measurements_at(cfg, step, axis)
+        metrics, preds = run_methods(batch, environment, cfg, ORDER)
+        rows.append((step, batch, environment, metrics, preds))
+    gt = rows[0][2].ground_truth.gas_map
+    obstacles = rows[0][2].obstacles > 0.5 if rows[0][2].obstacles is not None else np.zeros(gt.shape, dtype=bool)
+    H, W = gt.shape
+    extent = (0, W * cfg.env.cell_size, 0, H * cfg.env.cell_size)
+    vmax = gt[~obstacles].max()
+
+    cols = ["truth"] + ORDER
+    panel_w = 7.16 / len(cols)
+    fig, axes = plt.subplots(len(rows), len(cols), figsize=(7.16, len(rows) * panel_w * H / W * 1.08 + 0.75),
+                             gridspec_kw=dict(wspace=0.04, hspace=0.06, left=0.035, right=0.995, top=0.92, bottom=0.17))
+    for r, (step, batch, environment, metrics, preds) in enumerate(rows):
+        for c, col in enumerate(cols):
+            ax = axes[r, c]
+            if col == "truth":
+                draw_map(ax, gt, obstacles, extent, vmax, "Ground truth" if r == 0 else "")
+                ax.add_collection(LineCollection(batch.beams.cpu().numpy(), colors=BEAM_COLOR, linewidths=0.3,
+                                                 alpha=0.3))
+                pos = pose_positions(batch)
+                ax.scatter(pos[:, 0], pos[:, 1], marker="^", s=16, c="w", edgecolors="k", linewidths=0.5, zorder=3)
+                ax.set_ylabel(step_text(step, axis), fontsize=9)
+                ax.yaxis.set_label_coords(-0.06, 0.5)
+            else:
+                draw_map(ax, preds[col], obstacles, extent, vmax, label(col) if r == 0 else "")
+                ax.text(0.98, 0.04, f"{100 * metrics[col]['nrmse']:.1f}%", transform=ax.transAxes, ha="right",
+                        va="bottom", fontsize=7.5, bbox=dict(facecolor="white", edgecolor="none", pad=0.6, alpha=0.8))
+            for side in ax.spines.values():
+                side.set_visible(True); side.set_color("0.75"); side.set_linewidth(0.5)
+    sm = plt.cm.ScalarMappable(cmap=GAS_CMAP, norm=plt.Normalize(0, vmax))
+    cax = fig.add_axes([0.3, 0.07, 0.4, 0.025])
+    cbar = fig.colorbar(sm, cax=cax, orientation="horizontal", extend="max")
+    cbar.set_label("Concentration (ppm); numbers: NRMSE", labelpad=1)
+    cbar.ax.tick_params(labelsize=7.5)
+    save(fig, output)
+    for step, _, _, metrics, _ in rows:
+        print(f"{step_text(step, axis)}: " + ", ".join(f"{label(m)} {100 * metrics[m]['nrmse']:.2f}%" for m in ORDER))
+
+
+def save(fig, output):
     os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
     for ext in ("pdf", "png"):
         fig.savefig(f"{output}.{ext}", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {output}.{{pdf,png}}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Figures of the experiment on the number of measurements")
+    parser.add_argument("results", help="Results of scripts/experiments/num_measurements.py (JSON)")
+    parser.add_argument("--case", default=None, help="Case shown (default: the first of the experiment)")
+    parser.add_argument("--map_steps", nargs="+", type=float, default=[2, 4, 8],
+                        help="Steps of the experiment shown in the qualitative figure (pose axis)")
+    parser.add_argument("--seed", type=int, default=0, help="Sweep headings of the reconstructions shown (GADEN)")
+    parser.add_argument("--output", default=None, help="Output path without extension (default: plots/<experiment name>)")
+    parser.add_argument("--copy_to", default=None, help="Also copy the PDFs here (e.g. the paper's figs folder)")
+    args = parser.parse_args()
+
+    data = json.load(open(args.results))
+    meta = data["metadata"]
+    axis = meta.get("axis") or AXES[meta["step_unit"]]
+    case = case_of(meta, args.case or meta["cases"][0])
+    if case.name not in meta["cases"]:
+        sys.exit(f"--case must be one of the cases of the experiment: {meta['cases']}")
+    cfg = case.apply(experiment_config(meta))
+    if case.scenario is not None:
+        cfg.sim.seed = args.seed
+    output = args.output or os.path.join("plots", meta["experiment_name"])
+
+    quantitative_figure(data, case, cfg, axis, output)
+    outputs = [output]
+    if axis == "poses":
+        qualitative_figure(meta, case, cfg, axis, args.map_steps, output + "_maps")
+        outputs.append(output + "_maps")
     if args.copy_to:
         os.makedirs(os.path.expanduser(args.copy_to), exist_ok=True)
-        shutil.copy(f"{output}.pdf", os.path.expanduser(args.copy_to))
+        for o in outputs:
+            shutil.copy(f"{o}.pdf", os.path.expanduser(args.copy_to))
     print("results:", args.results)
-    for m in metrics:
-        print(f"{label(m)} on {case.name}, {step_text(step, axis)} (seed {cfg.sim.seed}): "
-              f"NRMSE {100 * metrics[m]['nrmse']:.2f}%")
-    print(f"Saved {output}.{{pdf,png}}")
 
 
 if __name__ == "__main__":
