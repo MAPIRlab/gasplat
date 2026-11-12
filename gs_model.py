@@ -22,9 +22,6 @@ class GasSplattingModel(nn.Module):
         self.pos_grad_accum = torch.zeros((initial_gaussians, 1), device=cfg.device)
         self.denom = torch.zeros((initial_gaussians, 1), device=cfg.device)
 
-        self.splits = 0
-        self.clones = 0
-
         # Support of every Gaussian, in standard deviations: beams passing farther
         # away neither contribute to its predictions nor count as crossing it
         self.support = cfg.train.gaussian_support
@@ -156,35 +153,25 @@ class GasSplattingModel(nn.Module):
         scale_sq_inv = 1.0 / (self.get_scale()**2 + 1e-7)
         return torch.diag_embed(scale_sq_inv) # (K, 2, 2)
 
+    def _rotate(self, D: torch.Tensor) -> torch.Tensor:
+        """R * D * R^T for diagonal matrices D (K, 2, 2) in the frame of each Gaussian."""
+        R = self.get_rotation_matrix()
+        return torch.bmm(R, torch.bmm(D, R.transpose(1, 2)))
+
     def get_covariance_inverse(self):
         """
         Computes the inverse covariance matrix Sigma^-1 = R * S^-2 * R^T
         Returns:
             covariance_inverse: Tensor of shape (K, 2, 2) representing the inverse covariance matrices of the Gaussians.
         """
-        R = self.get_rotation_matrix()
-        S_sq_inv = self.get_scale_square_inverse()
-
-        # Sigma^-1 = R * S^-2 * R^T
-        covariance_inverse = torch.bmm(R, torch.bmm(S_sq_inv, R.transpose(1, 2)))
-
-        return covariance_inverse
+        return self._rotate(self.get_scale_square_inverse())
 
     def get_covariance(self):
         """Computes the covariance matrix Sigma = R * S^2 * R^T
         Returns:
             covariance: Tensor of shape (K, 2, 2) representing the covariance matrices of the Gaussians.
         """
-        R = self.get_rotation_matrix()
-        
-        # S^2
-        scales_sq = self.get_scale()**2
-        S_sq = torch.diag_embed(scales_sq) # (K, 2, 2)
-
-        # Sigma = R * S^2 * R^T
-        covariance = torch.bmm(R, torch.bmm(S_sq, R.transpose(1, 2)))
-
-        return covariance
+        return self._rotate(torch.diag_embed(self.get_scale()**2))
 
     def forward(self, beams):
         pos = self.get_pos()
@@ -221,14 +208,8 @@ class GasSplattingModel(nn.Module):
             "rotation": new_rotation
         }
 
-        optimizable_tensors = self._cat_tensors_to_optimizer(optimizer, tensors_dict)
+        self._set_params(self._cat_tensors_to_optimizer(optimizer, tensors_dict))
 
-        self._pos = optimizable_tensors["pos"]
-        self._concentration = optimizable_tensors["concentration"]
-        self._scale = optimizable_tensors["scale"]
-        self._rotation = optimizable_tensors["rotation"]
-
-        self.num_gaussians = self._pos.shape[0]
         self.pos_grad_accum = torch.cat([self.pos_grad_accum, torch.zeros((N, 1), device=self._pos.device)], dim=0)
         self.denom = torch.cat([self.denom, torch.zeros((N, 1), device=self._pos.device)], dim=0)
     
@@ -276,77 +257,78 @@ class GasSplattingModel(nn.Module):
 
     # -------- DENSIFICATION ----------
 
-    def _prune_optimizer(self, optimizer: torch.optim.Optimizer, mask):
+    def _set_params(self, tensors: dict):
+        """Rebinds the parameters to the tensors the optimizer holds (by group name)
+        and updates the number of Gaussians."""
+        self._pos = tensors["pos"]
+        self._concentration = tensors["concentration"]
+        self._scale = tensors["scale"]
+        self._rotation = tensors["rotation"]
+        self.num_gaussians = self._pos.shape[0]
+
+    def _update_optimizer_tensors(self, optimizer: torch.optim.Optimizer, update_param, update_moment):
+        """
+        Replaces the parameter of every optimizer group by update_param(param, name)
+        and its Adam moments by update_moment(moment, name), moving the optimizer
+        state over to the new parameter. Returns the new parameters by group name.
+        """
         optimizable_tensors = {}
-        keep_mask = ~mask
 
         for group in optimizer.param_groups:
+            name = group["name"]
             stored_state = optimizer.state.get(group["params"][0], None)
             if stored_state is not None:
                 # Update optimizer's internal state
-                stored_state["exp_avg"] = stored_state["exp_avg"][keep_mask]
-                stored_state["exp_avg_sq"] = stored_state["exp_avg_sq"][keep_mask]
+                stored_state["exp_avg"] = update_moment(stored_state["exp_avg"], name)
+                stored_state["exp_avg_sq"] = update_moment(stored_state["exp_avg_sq"], name)
 
                 # Remove old state
                 del optimizer.state[group["params"][0]]
 
-                # New param
-                group["params"][0] = nn.Parameter((group["params"][0][keep_mask].requires_grad_(True)))
+            # New param
+            group["params"][0] = nn.Parameter(update_param(group["params"][0], name).requires_grad_(True))
 
+            if stored_state is not None:
                 # Set new param's state
                 optimizer.state[group["params"][0]] = stored_state
-            else:
-                group["params"][0] = nn.Parameter(group["params"][0][keep_mask].requires_grad_(True))
 
-            optimizable_tensors[group["name"]] = group["params"][0]
+            optimizable_tensors[name] = group["params"][0]
 
         return optimizable_tensors
+
+    def _prune_optimizer(self, optimizer: torch.optim.Optimizer, mask):
+        keep_mask = ~mask
+
+        def keep(tensor, name):
+            return tensor[keep_mask]
+
+        return self._update_optimizer_tensors(optimizer, keep, keep)
 
     def _cat_tensors_to_optimizer(self, optimizer: torch.optim.Optimizer, tensors_dict):
-        optimizable_tensors = {}
+        def extend_param(param, name):
+            return torch.cat((param, tensors_dict[name]), dim=0)
 
-        for group in optimizer.param_groups:
-            extension_tensor = tensors_dict[group["name"]]
-            stored_state = optimizer.state.get(group["params"][0], None)
-            if stored_state is not None:
-                # Update optimizer's internal state
-                stored_state["exp_avg"] = torch.cat(
-                    (stored_state["exp_avg"], torch.zeros_like(extension_tensor)), dim=0
-                )
-                stored_state["exp_avg_sq"] = torch.cat(
-                    (stored_state["exp_avg_sq"], torch.zeros_like(extension_tensor)), dim=0
-                )
+        def extend_moment(moment, name):
+            return torch.cat((moment, torch.zeros_like(tensors_dict[name])), dim=0)
 
-                # Remove old state
-                del optimizer.state[group["params"][0]]
-
-                # New param
-                group["params"][0] = nn.Parameter(
-                    torch.cat(
-                        (group["params"][0], extension_tensor), dim=0
-                    ).requires_grad_(True)
-                )
-
-                # Set param's new state
-                optimizer.state[group["params"][0]] = stored_state
-            else:
-                group["params"][0] = nn.Parameter(
-                    torch.cat(
-                        (group["params"][0], extension_tensor), dim=0
-                    ).requires_grad_(True)
-                )
-
-            optimizable_tensors[group["name"]] = group["params"][0]
-
-        return optimizable_tensors
+        return self._update_optimizer_tensors(optimizer, extend_param, extend_moment)
 
     def prune(self, optimizer: torch.optim.Optimizer, mask):
-        optimizable_tensors = self._prune_optimizer(optimizer, mask)
+        self._set_params(self._prune_optimizer(optimizer, mask))
 
-        self._pos = optimizable_tensors["pos"]
-        self._concentration = optimizable_tensors["concentration"]
-        self._scale = optimizable_tensors["scale"]
-        self._rotation = optimizable_tensors["rotation"]
+    def _replace_gaussians(self, optimizer: torch.optim.Optimizer, mask, tensors_dict):
+        """Adds the Gaussians of tensors_dict and removes the original ones selected by mask."""
+        # Add new gaussians' parameters
+        self._cat_tensors_to_optimizer(optimizer, tensors_dict)
+
+        # Prune original gaussians
+        prune_mask = torch.cat(
+            (
+                mask,
+                torch.zeros(tensors_dict["pos"].shape[0], dtype=torch.bool, device=mask.device)
+            )
+        )
+        self.prune(optimizer, prune_mask)
 
     def clone(self, optimizer: torch.optim.Optimizer, mask):
         new_pos = self._pos[mask]
@@ -365,12 +347,7 @@ class GasSplattingModel(nn.Module):
         }
 
         # Add new gaussians' parameters
-        optimizable_tensors = self._cat_tensors_to_optimizer(optimizer, tensors_dict)
-
-        self._pos = optimizable_tensors["pos"]
-        self._concentration = optimizable_tensors["concentration"]
-        self._scale = optimizable_tensors["scale"]
-        self._rotation = optimizable_tensors["rotation"]
+        self._set_params(self._cat_tensors_to_optimizer(optimizer, tensors_dict))
 
     def split_original(self, optimizer: torch.optim.Optimizer, mask, N=2):
         """
@@ -407,17 +384,7 @@ class GasSplattingModel(nn.Module):
             "rotation": new_rotation
         }
 
-        # Add new gaussians' parameters
-        self._cat_tensors_to_optimizer(optimizer, tensors_dict)
-
-        # Prune original gaussians
-        prune_mask = torch.cat(
-            (
-                mask,
-                torch.zeros(N * mask.sum(), dtype=torch.bool, device=mask.device)
-            )
-        )
-        self.prune(optimizer, prune_mask)
+        self._replace_gaussians(optimizer, mask, tensors_dict)
 
     def split_long_axis(self, optimizer: torch.optim.Optimizer, mask):
         """
@@ -474,17 +441,7 @@ class GasSplattingModel(nn.Module):
             "rotation": new_rotation
         }
 
-        # Add new gaussians' parameters
-        self._cat_tensors_to_optimizer(optimizer, tensors_dict)
-
-        # Prune original gaussians
-        prune_mask = torch.cat(
-            (
-                mask,
-                torch.zeros(N * mask.sum(), dtype=torch.bool, device=mask.device)
-            )
-        )
-        self.prune(optimizer, prune_mask)
+        self._replace_gaussians(optimizer, mask, tensors_dict)
 
     def densify_and_prune(self, optimizer: torch.optim.Optimizer):
         """
@@ -497,12 +454,13 @@ class GasSplattingModel(nn.Module):
         grads[grads.isnan()] = 0.0
         grad_mask = grads > self.densify_cfg.gradient_threshold
 
-        use_original_dens = hasattr(self.densify_cfg, 'original_dens') and self.densify_cfg.original_dens
+        # Pruning below is skipped if the model came in with a single Gaussian
+        num_before = self.num_gaussians
 
         num_clones = 0
         num_splits = 0
 
-        if use_original_dens:
+        if self.densify_cfg.original_dens:
             # --- Original Densification ---
             # Gaussians with small scale
             adjusted_scales = self.get_scale() / torch.max(self.map_size)
@@ -514,7 +472,6 @@ class GasSplattingModel(nn.Module):
             
             if num_clones > 0:
                 self.clone(optimizer, clone_mask)
-                self.clones += num_clones
 
             # Split
             split_mask = torch.logical_and(grad_mask, ~small_scale_mask)
@@ -528,7 +485,6 @@ class GasSplattingModel(nn.Module):
             
             if num_splits > 0:
                 self.split_original(optimizer, split_mask)
-                self.splits += num_splits
         else:
             # --- Proposed Densification ---
             # We don't use small_scale_mask. Every Gaussian with high gradient
@@ -537,32 +493,19 @@ class GasSplattingModel(nn.Module):
             
             if num_splits > 0:
                 self.split_long_axis(optimizer, grad_mask)
-                self.splits += num_splits
 
         # --- Prune ---
         num_prunes = 0
-        if self.num_gaussians > 1:
+        if num_before > 1:
             prune_mask = (self.get_relative_concentration() < self.densify_cfg.prune_threshold).view(-1)
             num_prunes = int(prune_mask.sum().item())
             self.prune(optimizer, prune_mask)
-
-        # Update current gaussians count
-        self.num_gaussians = self._pos.shape[0]
 
         # Reset gradient accumulator
         self.pos_grad_accum = torch.zeros((self.num_gaussians, 1), device=self._pos.device)
         self.denom = torch.zeros((self.num_gaussians, 1), device=self._pos.device)
 
         return {'splits': num_splits, 'clones': num_clones, 'prunes': num_prunes}
-
-    def count_crossing_beams(self, beams: torch.Tensor) -> torch.Tensor:
-        """
-        Number of beams that pass within the support of each Gaussian (Mahalanobis
-        distance), (K,).
-        """
-        with torch.no_grad():
-            distance_sq = segment_mahalanobis_sq(self.get_pos(), self.get_covariance_inverse(), beams)
-            return (distance_sq <= self.support**2).sum(dim=0)
 
     def update_accum_gradient(self, beams: torch.Tensor):
         """
@@ -571,13 +514,11 @@ class GasSplattingModel(nn.Module):
         move it, so the gradient is rescaled to an average over those beams
         (similar in spirit to 3DGS, which averages over the views in which a
         Gaussian is visible). Otherwise it would also measure how small a share
-        of the beams sees each Gaussian.
+        of the beams sees each Gaussian. Must follow the forward pass over these
+        beams that produced the gradient, which counts the crossing beams.
         """
         if self._pos.grad is not None:
-            # Counts from the forward pass that produced this gradient, if it saw these beams
             crossing = self.last_crossing_counts
-            if crossing is None or crossing.shape[0] != self.num_gaussians:
-                crossing = self.count_crossing_beams(beams)
             grad_norm = torch.linalg.vector_norm(self._pos.grad, dim=-1)
             grad_norm = (grad_norm * beams.shape[0] / crossing.clamp_min(1)).unsqueeze(1)
             mask = (crossing > 0).unsqueeze(1)
