@@ -1,214 +1,318 @@
-<h1 align="center">Gas Splatting</h1>
+<h1 align="center">GASPLAT</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/python-3.8%2B-blue.svg" alt="Python Version">
+  <b>Gas distribution mapping from TDLAS beam integrals with 2D Gaussian primitives</b>
+</p>
+
+<p align="center">
+  Alejandro Valencia-Rojas · Pepe Ojeda · Javier Monroy · Javier Gonzalez-Jimenez<br>
+  <sub>Machine Perception and Intelligent Robotics (MAPIR) Group, University of Malaga</sub>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.10-blue.svg" alt="Python 3.10">
   <img src="https://img.shields.io/badge/PyTorch-%23EE4C2C.svg?logo=PyTorch&logoColor=white" alt="PyTorch">
+  <img src="https://img.shields.io/badge/license-Gaussian--Splatting%20(non--commercial)-lightgrey.svg" alt="License">
+  <img src="https://img.shields.io/badge/paper-coming%20soon-lightgrey.svg" alt="Paper: coming soon">
 </p>
 
 <p align="center">
-  <img src="assets/training_evolution.gif" alt="Gas Splatting Training Example" width="800">
+  <a href="#installation">Installation</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#data">Data</a> ·
+  <a href="#experiments">Experiments</a> ·
+  <a href="#citation">Citation</a>
 </p>
-<p align="center"><i>Example of the Gas Splatting training evolution.</i></p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/gasplat_training_dark.gif">
+    <img src="assets/gasplat_training_light.gif" alt="GASPLAT mapping a gas plume as the robot measures from one pose after another" width="900">
+  </picture>
+</p>
+<p align="center"><i>A gas plume in an empty room, mapped while the robot measures from one vantage pose after another. Each pose adds a fan of laser beams and the estimate is refined from where it was. Each ellipse is one Gaussian primitive.</i></p>
 
 ## 📖 Overview
 
-This repository contains the code for my Bachelor's Thesis (Trabajo de Fin de Grado - TFG). It presents a novel approach to gas distribution mapping by introducing **Gas Splatting**, a method based on Gaussian Splatting for 2D gas tomography using Tunable Diode Laser Absorption Spectroscopy (TDLAS) measurements.
+An open-path gas sensor such as a **TDLAS** (Tunable Diode Laser Absorption Spectroscopy) does not measure the concentration at a point: each laser beam returns the **integral of the concentration along its path**. Building a gas map from these readings is a tomography problem, usually solved on a fixed grid with a smoothness prior, which fixes the resolution beforehand, flattens sharp concentration peaks and spreads gas beyond what the beams observe.
 
-The primary goal of this project is to accurately and efficiently reconstruct gas concentration maps by optimizing a set of 2D Gaussians through a differentiable pipeline.
+**GASPLAT** borrows the idea of [Gaussian Splatting](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/) and represents the gas field as a mixture of **anisotropic 2D Gaussians**. The integral of a Gaussian along a straight beam has a closed form, so the predicted reading of every beam is exact and differentiable, and the primitives are fitted directly to the measurements by gradient descent.
 
-## 📊 Performance Comparison
+### ✨ Highlights
 
-To evaluate the effectiveness of **Gas Splatting**, it is compared against traditional and state-of-the-art tomographic methods. The following results were obtained on a simulated 20x20m map with a grid resolution of 0.5m, using 40 TDLAS beams.
+- **Closed-form beam integrals**: an exact, differentiable forward model for path-integrated measurements, evaluated only for the beam–primitive pairs within three standard deviations.
+- **Adaptive density**: primitives are split where the measurements ask for more detail, and new ones are injected where the beams reveal gas that no primitive explains.
+- **Obstacle-aware**: a penalty built from distance fields of the map keeps the primitives out of walls and furniture.
+- **Continuous map**: the result can be evaluated at any resolution, without solving again.
+- **Scale-free hyperparameters**: nothing depends on the absolute concentration level or the size of the environment, so the same values serve an empty room and furnished houses.
+- **Incremental**: new batches of measurements, e.g. from a new robot pose, refine the current model.
+
+### 🔍 Compared with grid methods
 
 <p align="center">
-  <img src="assets/compare_methods.png" alt="Methods Comparison" width="600">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/room_comparison_dark.png">
+    <img src="assets/room_comparison_light.png" alt="Ground truth and the reconstructions of SART, RBF-SART, LFD, LTD and GASPLAT with 2, 4 and 8 poses" width="900">
+  </picture>
 </p>
+<p align="center"><i>The same room with 2, 4 and 8 poses; the number in each map is its NRMSE. SART leaves streaks along the beams and the smoothness priors of LFD and LTD blur the plume, while GASPLAT recovers its shape from four poses.</i></p>
 
-| Method | RMSE ↓ | SSIM ↑ | Total Time (s) |
-| :--- | :---: | :---: | :---: |
-| SART | 0.1381 | 0.1481 | 1.19 |
-| RBF Coupled SART | 0.0685 | 0.4623 | 1.30 |
-| LFD | 0.0736 | 0.4788 | 1.24 |
-| LTD | 0.0723 | 0.4760 | 1.23 |
-| **Gas Splatting** | **0.0311** | **0.9045** | 3.51 |
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/house_comparison_dark.png">
+    <img src="assets/house_comparison_light.png" alt="Ground truth, GASPLAT, LFD and LTD in a furnished house" width="900">
+  </picture>
+</p>
+<p align="center"><i>One run in a furnished house of the VGR dataset, with the robot at random poses. LFD and LTD flatten the peak of the plume.</i></p>
 
-*Note: While Gas Splatting requires more computational time, it achieves a significantly higher reconstruction quality (SSIM) and lower error (RMSE) compared to baseline methods.*
-
-## 🗂️ Repository Structure
-
-```bash
-gas_splatting/
-├── methods/            # Reconstruction method registry and runners
-├── real_data/          # Real-world TDLAS sweep datasets (JSON)
-├── scripts/            # experiments/ (paper comparisons), figures/ (method figures), tools/ (tuning and checks)
-├── utils/              # Simulation, geometry, initialization, and math utilities
-├── visualization/      # Visualization components and interactive tools
-├── config.py           # simple_parsing configuration definitions
-├── gs_model.py         # Gas Splatting model, densification logic 
-├── main.py             # Main entry point (Sim -> Init -> Train)
-└── trainer.py          # Optimization loop
-```
+<a id="installation"></a>
 
 ## 🛠️ Installation
 
-**1. Clone repository**
+**1. Clone the repository**
 ```bash
 git clone https://github.com/aleevr04/gas_splatting.git
 cd gas_splatting
 ```
 
-**2. Create and activate a virtual environment**
-
-The most convenient way to install dependencies is by creating a virtual environment. There are several tools for this purpose like `venv` or `conda`. A `venv` example is shown below:
-
+**2. Create and activate a virtual environment** (any tool works; `venv` shown)
 ```bash
-# Linux / macOS
 python3 -m venv .venv
-source .venv/bin/activate
-
-# Windows
-python -m venv .venv
-.venv\Scripts\activate
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 ```
 
-**3. Install PyTorch**
-
-Since PyTorch is highly hardware-dependent (CPU or GPU), please install it by following the instructions from their [official website](https://pytorch.org/get-started/locally/). CPU-only example:
-
+**3. Install PyTorch** following the [official instructions](https://pytorch.org/get-started/locally/) for your hardware. GASPLAT runs on the CPU by default, which is faster than a GPU for maps of this size:
 ```bash
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
 
-**4. Install project dependencies**
-
+**4. Install the dependencies**
 ```bash
 pip install -r requirements.txt
 ```
 
 <details>
-<summary><h2>🚀 Usage</h2></summary>
+<summary><b>Optional: GADEN Python bindings</b> (only to simulate new environments)</summary>
 
-### Standard Pipeline
+<br>
 
-To run the default simulation and training pipeline, simply execute the main script:
-
-```bash
-python main.py
-```
-
-This will generate simulation data (ground truth, beam geometry, and measurements), initialize model parameters, and start training.
-
-### Experiments, figures and tools
-
-Every script runs on a set of cases: GADEN scenarios (`--set tuning`, `held_out`, `all`, listed in `utils/scenario_sets.py`) or procedural maps (`--set procedural`, or `--seeds 0 1 2`). Any configuration option can be overridden on the command line. Plots go to `plots/` and results to `results/`.
-
-`scripts/experiments/` produces the comparisons for the paper:
-
-* `compare_methods.py`: Reconstructs the same measurements with Gas Splatting and the grid-based baselines (SART, RBF-SART, LFD, LTD), and reports reconstruction error and time per case. The system matrix of the grid methods is timed apart from their solves, and runs are warmed up so that times are comparable.
-
-* `num_measurements.py`: Reconstruction error of every method as measurements are added, pose by pose on GADEN scenarios (beam by beam on procedural maps). Meant for a simple environment, where the effect is easiest to see.
-
-`scripts/figures/` produces the figures of the method:
-
-* `injection_figure.py`: The Gaussian injection mechanism, step by step.
-
-* `far_field_gradient.py`: Primitives far from unexplained gas receive no gradient, which motivates the injection.
-
-* `densification_training.py`: Loss and error during training with the 3DGS densification and with the mass-conserving long-axis split, showing the loss spikes each one causes, and both reconstructions.
-
-* `split_c_factor.py`: Error of the long-axis split as the children are placed farther from the parent center (the offset of half the major scale).
-
-`scripts/tools/` holds tuning, checks and quick tests:
-
-* `make_scenarios.py`: Extracts the GADEN scenarios of the tuning and held-out sets from the VGR house archives into `data/scenarios`.
-
-* `benchmark.py`: Runs Gas Splatting on a set and reports, for every case, the normalized RMSE, recovered peak, mass error, gas inside obstacles, Gaussians and time, with a ground truth vs. reconstruction grid. Run it after any change to check that nothing got worse. Ablations are a single run each, e.g. `--original_dens` for the 3DGS densification.
-
-* `sweep.py`: One-at-a-time hyperparameter sweep. Each parameter is varied on its own and gets a plot of every metric against its value. Progress is saved as runs finish, so an interrupted sweep resumes by running the same command again.
-
-* `scale_invariance.py`: Checks that the reconstruction does not depend on the absolute concentration level, by repeating a run with the measurements multiplied by several factors.
-
-* `noise_first.py`: Incremental run whose first batches only measure noise, checking that the concentration scale is raised when the gas is found.
-
-* `test_obstacles.py`: Toy obstacle layouts on procedural maps, for quick checks of the obstacle penalty.
-
-* `test_real_data.py`: Runs Gas Splatting on the real TDLAS sweeps in `real_data/`.
-
-### GADEN scenarios and hyperparameter tuning
-
-Hyperparameters are tuned on the `tuning` set and the final values are checked on the `held_out` set, made of other houses:
+New gas simulations are run with [gaden_core](https://github.com/MAPIRlab/gaden_core), the core library of the [GADEN](https://github.com/MAPIRlab/gaden) simulator, through its Python bindings. Build it outside this repository with the virtual environment active:
 
 ```bash
-python scripts/tools/make_scenarios.py --vgr_dir ~/GADEN_files/scenarios   # once
-python scripts/tools/benchmark.py --set tuning                              # current configuration
-
-# 1. Learning rates (current value x 1/4 ... x8)
-python scripts/tools/sweep.py --params concentration_lr pos_lr scale_lr
-# 2. Densification and obstacle penalty
-python scripts/tools/sweep.py --params gradient_threshold --values 0.01 0.02 0.04 0.08 0.16
-python scripts/tools/sweep.py --params injection_scale --values 0.1 0.25 0.5 1 2
-python scripts/tools/sweep.py --params obstacle_lambda --values 0 0.025 0.05 0.1 0.2 0.4
-# 3. Stopping
-python scripts/tools/sweep.py --params iterations early_stopping_patience early_stopping_min_delta
-
-python scripts/tools/benchmark.py --set held_out                            # with the chosen values
+git clone https://github.com/MAPIRlab/gaden_core.git ~/gaden_core && cd ~/gaden_core
+git -c url."https://github.com/".insteadOf="git@github.com:" submodule update --init --recursive
+sudo apt install libfmt-dev libclang-dev llvm
+pip install wheel cppyy libclang
+# Enable the bindings: set(GENERATE_PYTHON_BINDINGS ON) in CMakeLists.txt
+mkdir build && cd build
+cmake .. -DLibClang_LIBRARY=$VIRTUAL_ENV/lib/python3.10/site-packages/clang/native/libclang.so -DBSC_ENABLE_CUDA=OFF
+make -j
+echo ~/gaden_core/build > $VIRTUAL_ENV/lib/python3.10/site-packages/gaden_core.pth
+python -c "from gaden_py import gaden"          # check
 ```
 
-After each stage, the chosen values are set in `config.py` (or passed on the command line) before sweeping the next one. Runs are parallel, one per GPU by default, and warmed up, so the times they report are comparable to single runs; with more workers than GPUs, runs share a GPU and their times grow.
-
-### Visualization
-
-The `visualization/` directory contains components used to display training progress and standalone visualization tools:
-
-* `visualization/live_visualizer.py`: Reusable live training visualizer instantiated by the trainer.
-
-* `visualization/split_visualizer.py`: Standalone interactive tool for inspecting Gaussian splitting.
-
+See the README of gaden_core for details. The VGR houses below do not need it.
 </details>
 
+<a id="quick-start"></a>
+
+## 🚀 Quick start
+
+```bash
+# A procedural gas map, no data needed: simulates the beams, fits GASPLAT and plots the result
+python main.py
+
+# A scenario package (see below), with a live view of the training
+python main.py --scenario data/scenarios/<package> --live_vis
+
+# The same scenario, with the robot at random poses instead of the coverage planner's
+python main.py --scenario data/scenarios/<package> --random_poses --seed 3
+```
+
+Every option of the simulation, the training and the densification can be set from the command line; `python main.py --help` lists them. Plots go to `plots/` and results to `results/`.
+
+<a id="data"></a>
+
+## 🏠 Scenario packages
+
+Experiments run on **scenario packages**: one snapshot of a 3D gas simulation, sliced at the height of the sensor, stored in `data/scenarios/<name>/` as
+
+| File | Contents |
+| :--- | :--- |
+| `scenario.npz` | ground-truth concentration (0.1 m cells), a 4× finer copy used to simulate the beams, occupancy map |
+| `meta.json` | source, cell size, map size, simulation, snapshot time, height |
+| `preview.png` | quick look at the gas and the obstacles |
+
+### From the VGR dataset
+
+The [VGR dataset](https://zenodo.org/records/10842409) ([paper](https://link.springer.com/article/10.1007/s10846-023-02012-z)) provides GADEN gas simulations in 30 furnished houses, several per house.
+
+1. Download `GADEN_files.zip` (about 49 GB) from [Zenodo](https://zenodo.org/records/10842409) and unpack it. The houses come as `scenarios/HouseNN.zip`; they are read directly from the zips.
+2. Extract the packages of the 16 simulations used here:
+   ```bash
+   python scripts/tools/make_scenarios.py --vgr_dir ~/GADEN_files/scenarios --set all
+   ```
+   `--set tuning` or `--set held_out` extract half of them, and `--iteration N` an earlier snapshot of each simulation (one every 0.5 s; the last, 1999, by default). The simulations of each set are listed in `utils/scenario_sets.py`.
+
+### From your own GADEN simulations
+
+With the [GADEN bindings](#installation) installed, `simulate_gaden.py` runs a simulation and writes its package. The environment is a GADEN scenario folder (e.g. `test_env/scenarios/10x6_empty_room` of the GADEN repository), and the simulation a folder with its `sim.yaml`, such as the ones in `gaden_sims/`:
+
+```bash
+python scripts/tools/simulate_gaden.py <gaden>/test_env/scenarios/10x6_empty_room \
+    --sim_dir gaden_sims/10x6_empty_room/side_plume --time 1000 --height source
+```
+
+`--time` takes one or more snapshot times (s), each written as its own package, and `--height` the height of the beam plane above the floor (m), or `source` for the layer of the gas source. The simulation of the example, `gaden_sims/10x6_empty_room/side_plume/sim.yaml`:
+
+```yaml
+source:
+  sourceType: point
+  position: [1.0, 3.0, 0.75]
+  gasType: 0
+deltaTime: 0.1
+windIterationDeltaTime: 1
+temperature: 298
+pressure: 1
+filamentPPMcenter: 20
+filamentInitialSigma: 30
+filamentGrowthGamma: 10
+filamentNoise_std: 0.02
+numFilaments_sec: 100
+expectedNumIterations: 10001
+saveResults: false
+saveDeltaTime: 0.5
+preCalculateConcentrations: false
+windLooping:
+  loop: false
+  from: 0
+  to: 0
+```
+
+### Procedural maps
+
+Smooth random gas fields without obstacles, generated on the fly: `--seeds 0 1 2` or `--set procedural` in `main.py` (`--seed`), `num_measurements.py` and the tools. The house and noise experiments need scenario packages.
+
+<a id="experiments"></a>
+
+## 🧪 Running the experiments
+
+Each experiment script prints a summary and writes its results to `results/` as JSON; a separate script draws its figure from those results into `plots/`. Experiments run one reconstruction at a time by default (`--workers 1`), so that the reported times are meaningful; more workers finish sooner, with only indicative times.
+
+**Accuracy against the number of measurements**: every method in an empty room, from 2 to 16 robot poses (a few minutes).
+```bash
+python scripts/experiments/num_measurements.py --scenario data/scenarios/10x6_empty_room_side_plume_h0.75_t1000 \
+    --poses 2 3 4 6 8 12 16 --runs 5
+python scripts/figures/num_measurements_figure.py results/num_measurements_<...>.json
+```
+
+**Comparison in furnished houses**: every method in the 16 VGR houses, each over 100 random placements of the robot's poses, with the error split by how the poses observe the free space (about 3 h with one worker; an interrupted run resumes when the command is repeated).
+```bash
+python scripts/experiments/random_poses.py --set all --runs 100
+python scripts/figures/houses_figure.py
+```
+
+**Robustness to sensor noise**: Gaussian noise proportional to each reading, from 0 to 20 %; `--discrepancy` adds GASPLAT with its noise-aware stopping criterion.
+```bash
+python scripts/experiments/noise_sensitivity.py --scenario data/scenarios/10x6_empty_room_side_plume_h0.75_t1000 \
+    --poses 4 8 --noise_levels 0 1 2 5 10 20 --runs 20 --discrepancy
+python scripts/figures/noise_figure.py results/noise_sensitivity_<...>.json --nrmse_only --noise_aware_only
+```
+
+The baselines are SART, RBF-SART and regularized least squares with first- and third-derivative priors (LFD, LTD), all on a 0.1 m grid (`methods/`). The scripts share how cases are chosen (`--set`, `--scenario`, `--seeds`, `--iteration`), the number of runs (`--runs`, seeds 0 … N−1) and the methods (`--methods`).
 
 <details>
-<summary><h2>⚙️ Configuration and CLI Options</h2></summary>
+<summary><b>Figures of the method</b></summary>
 
-This project uses `simple_parsing` to dynamically handle configuration parameters from the command line. You can customize almost any aspect of the simulation, initialization, training, and densification processes.
+<br>
 
-To see a full list of available options for a given script, run:
+| Script | Shows |
+| :--- | :--- |
+| `scripts/figures/injection_figure.py` | the Gaussian injection, step by step |
+| `scripts/figures/obstacle_figure.py` | the obstacle penalty in a two-room environment |
+| `scripts/figures/distance_fields_figure.py` | the distance fields behind the obstacle penalty |
 
-```bash
-python [script] --help
-```
-
-### Examples
-
-Run a custom simulation with 50 beams and a maximum of 2000 training iterations:
-
-```bash
-python main.py --num_beams 50 --iterations 2000
-```
-
-Compare Gas Splatting with the baselines on three procedural maps, with 100 beams each:
-
-```bash
-python scripts/experiments/compare_methods.py --seeds 0 1 2 --num_beams 100
-```
-
-Train the model using custom learning rates and enable real-time visualization:
-
-```bash
-python main.py --pos_lr 0.005 --concentration_lr 0.002 --live_vis
-```
-
-> ⚠️ Important Note: Because configuration classes are shared across the entire project, some CLI options might not be applicable or will have no effect depending on the specific script you are executing. For example, `--seed` has no effect on scripts given `--seeds`, which set the seed of each procedural map.
-
+Every figure script takes `--copy_to <folder>` to copy the PDF elsewhere.
 </details>
 
-## 📜 Acknowledgements and License
+<details>
+<summary><b>Tools and checks</b></summary>
 
-This project introduces custom implementations and novel features developed specifically for **Gas Splatting**. However, the core architecture and some of its utilities are deeply inspired by and built upon the open-source repository [r2_gaussian](https://github.com/ruyi-zha/r2_gaussian), which in turn is a derivative of the original 3D Gaussian Splatting implementation by Inria and MPII.
+<br>
 
-Because this repository contains derivative work, it is distributed under the identical **Gaussian-Splatting License**. 
+| Script | Purpose |
+| :--- | :--- |
+| `scripts/tools/benchmark.py` | GASPLAT on a set, with NRMSE, peak, mass, gas inside walls, primitives and time per case; run it after any change |
+| `scripts/tools/sweep.py` | one-at-a-time hyperparameter sweep, resumable |
+| `scripts/tools/scale_invariance.py` | checks that results do not depend on the absolute concentration level |
+| `scripts/tools/quick_compare.py` | every method on one case, side by side |
+| `scripts/tools/profile_step.py` | time spent in each part of a training step |
+| `scripts/tools/far_field_gradient.py` | why primitives far from unexplained gas need injection |
+| `scripts/tools/densification_training.py` | training with the 3DGS densification vs. the mass-conserving split |
+| `scripts/tools/split_c_factor.py` | the error of the split against the offset of its children |
+| `scripts/tools/readme_assets.py` | the animation and comparison images of this README (light and dark variants) |
+| `python -m unittest discover -s tests -t .` | unit tests of the closed-form integral |
+| `visualization/live_visualizer.py` | the live training view (`--live_vis`) |
+| `visualization/split_visualizer.py` | interactive tool to inspect how a primitive is split |
 
-* **The software is provided strictly for non-commercial, research, and evaluation purposes.**
-* Any commercial use requires prior and explicit consent from the original licensors (Inria/MPII).
+Hyperparameters can be explored with `sweep.py` on the `tuning` set and checked with `benchmark.py` on `held_out`, e.g.
+```bash
+python scripts/tools/benchmark.py --set tuning
+python scripts/tools/sweep.py --params gradient_threshold --values 0.01 0.02 0.04 0.08 0.16
+```
+</details>
 
-For more details, please refer to the `LICENSE` file included in this repository.
+## 🗂️ Repository structure
+
+```text
+gas_splatting/
+├── main.py              # Single run: simulate → initialize → train → plot
+├── config.py            # Configuration (simple_parsing): simulation, training, densification
+├── gs_model.py          # Gaussian mixture, rendering and density control
+├── trainer.py           # Optimization loop, early stopping, injection
+├── methods/             # Baselines (SART, RBF-SART, LFD, LTD) and the method registry
+├── utils/               # Forward model, simulation, GADEN/VGR packages, metrics, figure style, CLI
+├── scripts/
+│   ├── experiments/     # The experiments of the paper
+│   ├── figures/         # The figures of the paper
+│   └── tools/           # Everything else: data preparation, benchmarks, sweeps, checks, method studies
+├── gaden_sims/          # GADEN simulation definitions (sim.yaml) for custom scenarios
+├── visualization/       # Live training view and the split visualizer
+└── tests/               # Unit tests
+```
+
+<details>
+<summary><b>⚙️ Configuration</b></summary>
+
+<br>
+
+All options live in `config.py` and are shared by every script; `python <script> --help` lists the ones a script accepts, with their defaults. They are grouped as
+
+- **environment and simulation**: map and cell size, scenario package, number and placement of poses (`--num_poses`, `--random_poses`), angular step of the sweep, noise (`--noise`, `--noise_model`, `--noise_level`);
+- **training**: learning rates, iterations, early stopping, obstacle penalty weight (`--obstacle_lambda`), known noise level for the noise-aware stop (`--known_noise_level`);
+- **densification**: split and prune thresholds, injection.
+
+Scripts that fix an option themselves (e.g. the seed of each run) reject it with an explanation instead of silently overriding it.
+</details>
+
+<a id="citation"></a>
+
+## 📝 Citation
+
+The paper describing GASPLAT is in preparation; a BibTeX entry will be added here once it is published.
+
+If you use the VGR houses or GADEN, please also cite them:
+
+- P. Ojeda, J. Monroy, J. Gonzalez-Jimenez. *VGR Dataset: A CFD-based Gas Dispersion Dataset for Mobile Robotic Olfaction.* Journal of Intelligent & Robotic Systems, 2023. [doi:10.1007/s10846-023-02012-z](https://doi.org/10.1007/s10846-023-02012-z)
+- J. Monroy, V. Hernandez-Bennetts, H. Fan, A. Lilienthal, J. Gonzalez-Jimenez. *GADEN: A 3D Gas Dispersion Simulator for Mobile Robot Olfaction in Realistic Environments.* Sensors 17(7):1479, 2017.
+
+## 🙏 Acknowledgements and license
+
+This work was partially funded by the University of Málaga under project PPRO-TEP960-G-2023 (TEP960-G-FEDER).
+
+The core architecture and some utilities build upon [R²-Gaussian](https://github.com/ruyi-zha/r2_gaussian), itself derived from the original [3D Gaussian Splatting](https://github.com/graphdeco-inria/gaussian-splatting) implementation by Inria and MPII. As derivative work, this repository is distributed under the same **Gaussian-Splatting License**:
+
+- the software is provided for **non-commercial research and evaluation** only;
+- commercial use requires prior consent from the original licensors (Inria/MPII).
+
+See [`LICENSE.md`](LICENSE.md) for the full terms.
