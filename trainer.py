@@ -12,6 +12,7 @@ from gs_model import GasSplattingModel
 from utils.sim_utils import EnvironmentContext, MeasurementBatch
 from utils.densification_utils import extract_candidate_positions, injection_scale
 from utils.gaussian_utils import estimate_concentration_scale
+from utils.init_utils import setup_gs_model
 from utils.obstacle_utils import DistanceFields, obstacle_penalty
 
 
@@ -336,3 +337,20 @@ class Trainer:
             torch.cuda.empty_cache()
 
         return self.results
+
+
+def fit_gasplat(batch: MeasurementBatch, cfg: Config,
+                environment: EnvironmentContext | None = None) -> tuple[GasSplattingModel, TrainingResults, float]:
+    """Initializes GASPLAT on a batch of measurements and trains it.
+
+    Returns the model, the training history and the fit time (s): the time of the
+    initialization, of the trainer setup (which precomputes the distance fields of the
+    obstacle penalty, timed like the system matrix of the grid methods) and of the training.
+    """
+    model, init_data = setup_gs_model(batch, cfg)
+    t0 = time.time()
+    trainer = Trainer(model, cfg, environment=environment)
+    trainer_setup_time = time.time() - t0
+    trainer.train(batch)
+    results = trainer.finish()
+    return model, results, init_data.info["setup_time"] + trainer_setup_time + results.training_time

@@ -4,7 +4,7 @@ from scipy.sparse.linalg import lsqr
 from tqdm import tqdm
 from utils.geometry_utils import ray_cell_lengths
 
-def create_system_matrix_sparse(grid_size: tuple, beams: list, cell_dimensions_meters: float, quiet: bool = False) -> sparse.csr_matrix:
+def create_system_matrix_sparse(grid_size: tuple, beams: list, cell_dimensions_meters: float) -> sparse.csr_matrix:
     """Creates the sparse system matrix A for TDLAS tomography: A[n, row * cols + col]
     is the length of beam n inside that cell, the same model the simulated
     measurements are computed with."""
@@ -15,8 +15,8 @@ def create_system_matrix_sparse(grid_size: tuple, beams: list, cell_dimensions_m
 # SART - SIMULTANEOUS ALGEBRAIC RECONSTRUCTION TECHNIQUE
 #===============================
 def sart(system_matrix: sparse.csr_matrix, measurements: np.ndarray, 
-         grid_size: tuple , num_iterations: int = 50, initial_guess=None, 
-         relaxation_factor: float = 1.0, quiet: bool = False):
+         grid_size: tuple , num_iterations: int = 400,
+         relaxation_factor: float = 1.6, quiet: bool = False):
     """
     Simultaneous Algebraic Reconstruction Technique (SART).
     
@@ -35,19 +35,13 @@ def sart(system_matrix: sparse.csr_matrix, measurements: np.ndarray,
         system_matrix (sparse.csr_matrix): The system matrix (A).
         measurements (np.ndarray): The vector of measurements/projections (p).
         num_iterations (int): Number of iterations to perform.
-        initial_guess (np.ndarray, optional): Initial guess for the image.
-        relaxation_factor (float, optional): Relaxation parameter (lambda). 
-                                             Typical values are between 0.1 and 1.0.
+        relaxation_factor (float, optional): Relaxation parameter (lambda), in (0, 2).
 
     Returns:
         np.ndarray: The reconstructed image reshaped as a square 2D array.
     """
     num_voxels = system_matrix.shape[1]
-    
-    if initial_guess is None:
-        reconstruction = np.zeros(num_voxels, dtype=np.float32)
-    else:
-        reconstruction = initial_guess.astype(np.float32).copy()
+    reconstruction = np.zeros(num_voxels, dtype=np.float32)
 
     eps = 1e-8
     
@@ -198,7 +192,7 @@ def rbf_sart(system_matrix: sparse.csr_matrix,
 #===============================
 # LFD - Low First Derivative (Smoothness)
 #===============================
-def lfd(system_matrix: sparse.csr_matrix, measurements: np.ndarray, grid_size: tuple, alpha: float) -> np.ndarray:
+def lfd(system_matrix: sparse.csr_matrix, measurements: np.ndarray, grid_size: tuple, alpha: float = 0.07) -> np.ndarray:
     """
     Performs tomographic reconstruction with smoothness regularization, penalizing
     large first spatial derivatives (differences between neighboring pixels).
@@ -237,7 +231,7 @@ def lfd(system_matrix: sparse.csr_matrix, measurements: np.ndarray, grid_size: t
 #===============================
 # LTD (LOW THIRD DERIVATIVE)
 #===============================
-def ltd(system_matrix: sparse.csr_matrix, measurements: np.ndarray, grid_size: tuple, alpha: float = 0.01) -> np.ndarray:
+def ltd(system_matrix: sparse.csr_matrix, measurements: np.ndarray, grid_size: tuple, alpha: float = 5.0) -> np.ndarray:
     """
     Implements the Low Third Derivative (LTD) method for tomographic reconstruction.
     This version corrects the D3_col matrix construction and provides improved explanations.
@@ -247,7 +241,7 @@ def ltd(system_matrix: sparse.csr_matrix, measurements: np.ndarray, grid_size: t
                                             of shape (num_measurements, num_voxels).
         measurements (np.ndarray): The measurement vector of shape (num_measurements).
         grid_size (tuple): The [rows, cols] of the image to reconstruct.
-        alpha (float, optional): The regularization parameter. Defaults to 0.01.
+        alpha (float, optional): The regularization parameter. Defaults to 5.0.
 
     Returns:
         np.ndarray: The reconstructed image of shape (rows, cols).
@@ -286,7 +280,7 @@ def ltd(system_matrix: sparse.csr_matrix, measurements: np.ndarray, grid_size: t
     augmented_measurements = np.hstack([measurements, np.zeros(n_row_reg), np.zeros(n_col_reg)])
 
     # Solve the least squares system with the iterative lsqr method.
-    reconstructed_image_flat, istop, itn, normr = lsqr(augmented_matrix, augmented_measurements, iter_lim=500)[:4]
+    reconstructed_image_flat = lsqr(augmented_matrix, augmented_measurements, iter_lim=500)[0]
 
     # Apply a non-negativity constraint to ensure the solution is physically
     # plausible (attenuation values cannot be negative).
