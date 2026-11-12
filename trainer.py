@@ -303,9 +303,10 @@ class Trainer:
             # --- Real time visualization ---
             if self.visualizer and (iteration % 20 == 0 or is_densifying):
                 self.visualizer.update(
-                    iteration=self.global_iteration, 
-                    loss_history=self.results.loss_history, 
-                    model=self.model
+                    iteration=self.global_iteration,
+                    loss_history=self.results.loss_history,
+                    model=self.model,
+                    beams=self.buffer_beams
                 )
             # ---------------------------------
             

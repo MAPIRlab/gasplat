@@ -28,20 +28,24 @@ THEME = {
     'axis_text': '#6b7280',     # Color for the numerical tick values on the graphs
     
     # Plotting & Visuals
-    'colormap': 'viridis',
+    'colormap': 'viridis',  # Colour map of the estimated and ground truth maps (any pyqtgraph/matplotlib name)
     'grid_alpha': 0.10,   # Opacity (0.0 to 1.0) of the background grid in the loss plot
+    'wall': (180, 180, 180, 255),         # Obstacles on every map
+    'beam_pen': (59, 111, 182, 70),       # Beams: thin, translucent blue
+    'pose_brush': (59, 111, 182, 255),    # Vantage poses (triangles)
+    'ellipse_pen_strong': (255, 255, 255, 70),  # 1-sigma outline of the Gaussians holding most gas
+    'ellipse_pen_faint': (255, 255, 255, 25),    # ... and of the weaker ones
 
-    # Accents & Data Points
+    # Accents
     'accent': '#4f46e5',                # Primary brand color (Indigo) for banner numbers AND the loss curve line
     'accent_fill': (79, 70, 229, 30),     # Highly transparent version of the accent color for shading under the loss curve
-    'scatter_brush': (99, 102, 241, 180), # Lighter indigo with transparency for the inner fill of Gaussian points
-    'scatter_pen': (255, 255, 255, 200),  # Slightly transparent white for the outline border of Gaussian points
     
-    # Gaussian Sizing Physics
-    'scatter_size_scale': 80,
-    'scatter_size_min': 10,
-    'scatter_size_max': 60,
-    
+    # Gaussians drawn as their 1-sigma ellipse: only those holding at least ellipse_min of the
+    # largest concentration, the ones above ellipse_strong_level of it more opaque
+    'ellipse_min': 0.05,
+    'ellipse_strong_level': 0.3,
+    'ellipse_points': 40,
+
     # --- Window Dimensions ---
     'window_width_ratio': 0.5,
     'min_window_width': 900,
@@ -68,13 +72,15 @@ class CleanLogAxis(pg.AxisItem):
 
 class LiveVisualizer:
     def __init__(self, cfg: Config, environment: EnvironmentContext | None = None):
-        """Shows the ground truth and the obstacles of the environment, when it has them."""
+        """Three panels over the loss curve: the beams measured so far, the estimated map with every
+        Gaussian drawn as its 1-sigma ellipse, and the ground truth when there is one. Maps use
+        THEME['colormap'], with the obstacles in grey on every panel."""
         self.map_size = cfg.env.map_size
         self.cell_size = cfg.env.cell_size
         self.quiet = cfg.quiet
         ground_truth = environment.ground_truth.gas_map if environment and environment.ground_truth else None
         obstacles = environment.obstacles if environment else None
-        # Gaussians, estimated map and, when there is one, the ground truth
+        # Beams, estimated map and, when there is one, the ground truth
         self.has_ground_truth = ground_truth is not None
         self.num_cols = 3 if self.has_ground_truth else 2
 
@@ -96,6 +102,7 @@ class LiveVisualizer:
             self._show_ground_truth(ground_truth)
         if obstacles is not None:
             self._show_obstacles(obstacles)
+        self.num_beams_shown = 0
 
     def _frame_writer(self):
         while True:
@@ -175,48 +182,50 @@ class LiveVisualizer:
         def make_title(text):
             return f'<b style="font-family: {THEME["font_family"]}, sans-serif;">{text}</b>'
 
-        # Gaussians Scatter (Row 0, Col 0)
-        self.p_gaussians = self.canvas.addPlot(row=0, col=0)
-        self.p_gaussians.setTitle(make_title("Gaussians' positions"), size=THEME['title_size'], color=THEME['title'])
-        self.p_gaussians.hideAxis('left')
-        self.p_gaussians.hideAxis('bottom')
-        
-        self.scatter = pg.ScatterPlotItem(
-            brush=pg.mkBrush(color=THEME['scatter_brush']),
-            pen=pg.mkPen(color=THEME['scatter_pen'], width=1)
-        )
-        self.p_gaussians.addItem(self.scatter)
+        def map_plot(col, title):
+            p = self.canvas.addPlot(row=0, col=col)
+            p.setTitle(make_title(title), size=THEME['title_size'], color=THEME['title'])
+            p.hideAxis('left')
+            p.hideAxis('bottom')
+            return p
 
-        # Estimated Map (Row 0, Col 1)
-        self.p_map = self.canvas.addPlot(row=0, col=1)
-        self.p_map.setTitle(make_title("Estimated Map"), size=THEME['title_size'], color=THEME['title'])
-        self.p_map.hideAxis('left')
-        self.p_map.hideAxis('bottom')
-        
+        # Beams measured so far and their vantage poses (Row 0, Col 0)
+        self.p_beams = map_plot(0, "Beams")
+        self.beam_lines = pg.PlotDataItem(pen=pg.mkPen(color=THEME['beam_pen'], width=1), connect='pairs')
+        self.p_beams.addItem(self.beam_lines)
+        self.pose_markers = pg.ScatterPlotItem(symbol='t1', size=11, brush=pg.mkBrush(THEME['pose_brush']),
+                                               pen=pg.mkPen('w', width=1))
+        self.pose_markers.setZValue(2)
+        self.p_beams.addItem(self.pose_markers)
+
+        # Estimated map with the Gaussians as ellipses (Row 0, Col 1)
+        self.p_map = map_plot(1, "Estimated map")
         self.img_map_item = pg.ImageItem()
+        self.img_map_item.setColorMap(THEME['colormap'])
         self.p_map.addItem(self.img_map_item)
+        self.ellipses_faint = pg.PlotDataItem(pen=pg.mkPen(color=THEME['ellipse_pen_faint'], width=1), connect='finite')
+        self.ellipses_strong = pg.PlotDataItem(pen=pg.mkPen(color=THEME['ellipse_pen_strong'], width=1.2), connect='finite')
+        for item in (self.ellipses_faint, self.ellipses_strong):
+            item.setZValue(2)
+            self.p_map.addItem(item)
 
-        map_plots = [self.p_gaussians, self.p_map]
+        map_plots = [self.p_beams, self.p_map]
 
         # Ground Truth (Row 0, Col 2), if available
         if self.has_ground_truth:
-            self.p_gt = self.canvas.addPlot(row=0, col=2)
-            self.p_gt.setTitle(make_title("Ground Truth"), size=THEME['title_size'], color=THEME['title'])
-            self.p_gt.hideAxis('left')
-            self.p_gt.hideAxis('bottom')
-
+            self.p_gt = map_plot(2, "Ground truth")
             self.img_gt_item = pg.ImageItem()
-            self.p_gt.addItem(self.img_gt_item)
             self.img_gt_item.setColorMap(THEME['colormap'])
+            self.p_gt.addItem(self.img_gt_item)
             map_plots.append(self.p_gt)
 
-        # Obstacles drawn over the ground truth, or over the estimated map without one (gray, transparent elsewhere)
-        self.img_obstacles_item = pg.ImageItem()
-        self.img_obstacles_item.setZValue(1)
-        (self.p_gt if self.has_ground_truth else self.p_map).addItem(self.img_obstacles_item)
-
-        # Colormap for maps
-        self.img_map_item.setColorMap(THEME['colormap'])
+        # Obstacles drawn over every map (gray, transparent elsewhere)
+        self.obstacle_items = []
+        for p in map_plots:
+            item = pg.ImageItem()
+            item.setZValue(1)
+            p.addItem(item)
+            self.obstacle_items.append(item)
 
         # Loss Curve (Row 1, all columns)
         custom_y_axis = CleanLogAxis(orientation='left')
@@ -275,14 +284,36 @@ class LiveVisualizer:
         self.img_map_item.setLevels(self.gt_levels)
 
     def _show_obstacles(self, obstacles: np.ndarray):
-        """Overlays the obstacle cells (H, W) on the ground truth panel (estimated map without ground truth)."""
+        """Overlays the obstacle cells (H, W) on every map panel."""
         rgba = np.zeros(obstacles.shape + (4,), dtype=np.ubyte)
-        rgba[obstacles > 0.5] = (180, 180, 180, 255)
-        self.img_obstacles_item.setImage(rgba.transpose(1, 0, 2), levels=(0, 255))
-        self.img_obstacles_item.setRect(QtCore.QRectF(0, 0, self.map_size[0], self.map_size[1]))
+        rgba[obstacles > 0.5] = THEME['wall']
+        for item in self.obstacle_items:
+            item.setImage(rgba.transpose(1, 0, 2), levels=(0, 255))
+            item.setRect(QtCore.QRectF(0, 0, self.map_size[0], self.map_size[1]))
 
-    def update(self, iteration: int, loss_history: List[float], model: GasSplattingModel):
-        """Extracts the latest parameters from the model, updates the UI components, and saves the frame state."""
+    def _show_beams(self, beams: np.ndarray):
+        """Draws the beams (N, 2, 2) in meters and, for sweeps from vantage poses, the poses: the
+        common origins of the beams (procedural beams start at distinct points and show no pose)."""
+        self.beam_lines.setData(beams[:, :, 0].ravel(), beams[:, :, 1].ravel())
+        origins = np.unique(np.round(beams[:, 0], 3), axis=0)
+        if len(origins) <= len(beams) / 4:
+            self.pose_markers.setData(origins[:, 0], origins[:, 1])
+        self.num_beams_shown = len(beams)
+
+    def _ellipse_lines(self, pos: np.ndarray, cov: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """1-sigma ellipses of the Gaussians as one polyline, separated by NaN (drawn with connect='finite')."""
+        if len(pos) == 0:
+            return np.array([]), np.array([])
+        t = np.linspace(0, 2 * np.pi, THEME['ellipse_points'])
+        circle = np.stack([np.cos(t), np.sin(t)])                         # (2, T)
+        w, v = np.linalg.eigh(cov)                                        # cov = V diag(w) V^T
+        points = pos[:, :, None] + (v * np.sqrt(np.maximum(w, 0))[:, None, :]) @ circle   # (K, 2, T)
+        points = np.concatenate([points, np.full((len(pos), 2, 1), np.nan)], axis=2)
+        return points[:, 0].ravel(), points[:, 1].ravel()
+
+    def update(self, iteration: int, loss_history: List[float], model: GasSplattingModel, beams=None):
+        """Extracts the latest parameters from the model, updates the UI components, and saves the frame state.
+        beams: the (N, 2, 2) beams trained on, redrawn when their number changes (a new batch)."""
         # Update Loss
         valid_losses = [l for l in loss_history if not np.isnan(l) and not np.isinf(l)]
         x_data = np.arange(len(valid_losses))
@@ -294,13 +325,20 @@ class LiveVisualizer:
             self.loss_curve.setFillLevel(safe_bottom)
             self.loss_curve.setData(x_data, valid_losses)
 
+        if beams is not None and len(beams) != self.num_beams_shown:
+            self._show_beams(beams.detach().cpu().numpy())
+
         # Extract tensors
         pos = model.get_pos().detach().cpu().numpy()
+        cov = model.get_covariance().detach().cpu().numpy()
         conc = model.get_concentration().detach().cpu().numpy()
-        sizes = np.clip(conc * THEME['scatter_size_scale'], THEME['scatter_size_min'], THEME['scatter_size_max'])
 
-        # Update Gaussians Scatter
-        self.scatter.setData(pos[:, 0], pos[:, 1], size=sizes)
+        # Update the Gaussians' ellipses: only those holding visible gas, the strongest more opaque
+        relative = conc / max(float(conc.max()), 1e-12) if len(conc) else conc
+        strong = relative >= THEME['ellipse_strong_level']
+        faint = (relative >= THEME['ellipse_min']) & ~strong
+        self.ellipses_strong.setData(*self._ellipse_lines(pos[strong], cov[strong]))
+        self.ellipses_faint.setData(*self._ellipse_lines(pos[faint], cov[faint]))
 
         # Update Header Banner
         accent = THEME['accent']
