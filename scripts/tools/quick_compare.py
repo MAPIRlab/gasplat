@@ -1,13 +1,12 @@
 """
 Runs every method (or --methods) on the measurements of one case and plots
 their reconstructions side by side, to judge them at a glance. Works on any
-case, including real data, which has no ground truth: the first panel then
+case, also one without a ground truth: the first panel then
 shows the beams, more opaque the higher their reading, and every map gets its
 own color scale (its peak is in the title), so that a method with a few sharp
 spikes does not hide the others. With a ground truth, it comes first, every
 map shares its color scale, and the NRMSE of each method is shown.
 
-    python scripts/tools/quick_compare.py --scenario real_data/full_sweep
     python scripts/tools/quick_compare.py --scenario data/scenarios/house01_2,4-1_slow_h0.85_it1999 --num_poses 6
     python scripts/tools/quick_compare.py --seed 3 --methods LFD "Gas Splatting"     # procedural map
 """

@@ -126,7 +126,7 @@ def run_methods(batch: MeasurementBatch, environment: EnvironmentContext, cfg: C
 
     The system matrix of the grid methods is built once; its time is reported
     on its own ("matrix_time"), and each method reports only its own solve or
-    fit time. Without a ground truth (real data) only the times are reported.
+    fit time. Without a ground truth only the times are reported.
     With the observation levels of the cells, the metrics also cover each region
     (gas_map_metrics). Returns ({method: metrics}, {method: reconstruction}).
     """
