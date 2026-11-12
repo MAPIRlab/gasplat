@@ -54,10 +54,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from utils.paths import SCENARIOS_DIR
+
 FREE, OBSTACLE, OUTLET = 0, 1, 2
 
 # Where scenario packages are written by default (<repo>/data/scenarios)
-DEFAULT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "data", "scenarios"))
+DEFAULT_ROOT = SCENARIOS_DIR
 
 
 # ==========================================

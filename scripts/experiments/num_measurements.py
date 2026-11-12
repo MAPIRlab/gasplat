@@ -11,14 +11,17 @@ beams, with the other on top. Procedural maps have no poses, so a growing
 number of beams (--beams) is taken from a fixed random order instead. Every
 method reconstructs each set of measurements from scratch.
 
-    python scripts/experiments/num_measurements.py --set simple --poses 2 3 4 6 8 12 16 --repeats 5
-    python scripts/experiments/num_measurements.py --set simple --angular_steps 32 16 8 4 2 1 --repeats 5
+    python scripts/experiments/num_measurements.py --set simple --poses 2 3 4 6 8 12 16 --runs 5
+    python scripts/experiments/num_measurements.py --set simple --angular_steps 32 16 8 4 2 1 --runs 5
     python scripts/experiments/num_measurements.py --seeds 0 1 2 --beams 10 20 40 80 160
 
---repeats N runs every GADEN case N times with seeds 0..N-1, which only change the
+--runs N runs every GADEN case N times with seeds 0..N-1, which only change the
 starting heading of each sweep (the beams turn by up to one angular step; poses
 are fixed). Curves show the mean and a band of one standard deviation: the
-sensitivity of each method to where exactly the beams fall.
+sensitivity of each method to where exactly the beams fall. The seed is set by
+--runs (GADEN) or --seeds (procedural maps), so --seed is rejected. Times are
+the reconstruction time of each method, with the system matrix of the grid
+methods (total_time).
 
 Meant for a simple environment (the empty room with our own sources), where the
 effect of the number of measurements is easiest to see.
@@ -36,9 +39,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 
 from config import Config
 from methods.registry import AVAILABLE_METHODS
+from utils.paths import PLOTS_DIR
+from utils.cli import add_methods_argument, add_workers_argument, reject_options
 from utils.scenario_sets import add_case_arguments, cases_label, get_cases
 from utils.plot_utils import set_publication_style
-from utils.experiment_utils import measurements_at, run_methods, save_experiment_results, yield_runs
+from utils.experiment_utils import (batch_config, measurements_at, run_methods, save_experiment_results, total_time,
+                                    yield_runs)
 
 
 def run_step(cfg: Config, step: float, axis: str, methods: list[str]) -> dict:
@@ -57,17 +63,15 @@ def main():
     parser.add_argument("--angular_steps", nargs="+", type=float, default=None,
                         help="Angular steps of the sweep at each pose (deg) with fixed poses, for GADEN scenarios")
     parser.add_argument("--beams", nargs="+", type=int, default=None, help="Numbers of beams, for procedural maps")
-    parser.add_argument("--methods", nargs="+", default=list(AVAILABLE_METHODS), choices=list(AVAILABLE_METHODS))
-    parser.add_argument("--repeats", type=int, default=1, help="Runs per GADEN case, with seeds 0..N-1 (sweep headings)")
-    parser.add_argument("--workers", type=int, default=1, help="Runs in parallel (times become indicative)")
+    add_methods_argument(parser)
+    parser.add_argument("--runs", type=int, default=1, help="Runs per GADEN case, with seeds 0..N-1 (sweep headings)")
+    add_workers_argument(parser)
     args = parser.parse_args()
-    cfg: Config = args.cfg
-    cfg.quiet = True
-    cfg.train.do_eval = False
-    cfg.train.live_vis = False
+    reject_options(parser, {"sim.seed": "set by --runs (GADEN scenarios) or --seeds (procedural maps)"})
+    cfg: Config = batch_config(args.cfg)
     set_publication_style()
 
-    cases = get_cases(args.set, args.seeds, cfg.sim.scenario)
+    cases = get_cases(args.set, args.seeds, cfg.sim.scenario, iteration=args.iteration)
     procedural = cases[0].scenario is None
     axis = "beams" if procedural else ("poses" if args.poses else "angular_step")
     steps = {"beams": args.beams, "poses": args.poses, "angular_step": args.angular_steps}[axis]
@@ -76,14 +80,14 @@ def main():
     steps = sorted(steps, reverse=axis == "angular_step")   # fewest measurements first
     if procedural:
         cfg.sim.num_beams = max(steps)
-    label = "procedural" if args.seeds else f"{cases_label(args.set, args.seeds, cfg.sim.scenario)}_{axis}"
+    label = "procedural" if args.seeds else f"{cases_label(args.set, args.seeds, cfg.sim.scenario, args.iteration)}_{axis}"
 
-    if procedural and args.repeats > 1:
-        sys.exit("--repeats applies to GADEN scenarios; procedural maps vary with --seeds")
-    repeats = list(range(args.repeats)) if args.repeats > 1 else [cfg.sim.seed]
+    if procedural and args.runs > 1:
+        sys.exit("--runs applies to GADEN scenarios; procedural maps vary with --seeds")
+    run_seeds = list(range(args.runs))
     tasks = []
     for c in cases:
-        for r in repeats:
+        for r in run_seeds:
             case_cfg = c.apply(cfg)
             if not procedural:
                 case_cfg.sim.seed = r
@@ -96,7 +100,7 @@ def main():
     names = [c.name for c in cases]
     # Procedural seeds share the same numbers of beams and are averaged; GADEN scenarios are shown one by one
     panels = {"mean over seeds": names} if procedural else {n: [n] for n in names}
-    runs_of = lambda members, s: [results[(n, s, r)] for n in members for r in repeats]
+    runs_of = lambda members, s: [results[(n, s, r)] for n in members for r in run_seeds]
     curves = {}
     for panel, members in panels.items():
         beams = [float(np.mean([x["beams"] for x in runs_of(members, s)])) for s in steps]
@@ -107,8 +111,8 @@ def main():
             unit = "°" if axis == "angular_step" else " "
             print(f"  {'':18s}" + "".join(f"{s:>8g}{unit}" for s in steps) + f"   ({axis.replace('_', ' ')})")
         for m in args.methods:
-            values = lambda key: [[x["metrics"][m][key] for x in runs_of(members, s)] for s in steps]
-            nrmse, time_s = values("nrmse"), values("time")
+            values = lambda f: [[f(x["metrics"][m]) for x in runs_of(members, s)] for s in steps]
+            nrmse, time_s = values(lambda x: x["nrmse"]), values(total_time)
             curves[panel][m] = {"nrmse": [float(np.mean(v)) for v in nrmse], "nrmse_std": [float(np.std(v)) for v in nrmse],
                                 "time": [float(np.mean(v)) for v in time_s], "time_std": [float(np.std(v)) for v in time_s]}
             print(f"  {m:18s}" + "".join(f"{100 * np.mean(v):6.2f}±{100 * np.std(v):4.2f}" for v in nrmse))
@@ -117,10 +121,10 @@ def main():
         {"experiment_name": f"num_measurements_{label}", "cases": names, "steps": steps, "axis": axis,
          "step_unit": {"beams": "beams", "poses": "poses", "angular_step": "angular step (deg)"}[axis],
          "case_settings": {c.name: {"scenario": c.scenario and os.path.abspath(c.scenario), "seed": c.seed} for c in cases},
-         "methods": args.methods,
+         "methods": args.methods, "iteration": args.iteration,
          "config": dataclasses.asdict(cfg)},
-        {"runs": [{"case": n, "step": s, "seed": r, **results[(n, s, r)]} for n in names for s in steps for r in repeats],
-         "curves": curves, "repeats": len(repeats)},
+        {"runs": [{"case": n, "step": s, "seed": r, **results[(n, s, r)]} for n in names for s in steps for r in run_seeds],
+         "curves": curves, "repeats": len(run_seeds)},
     )
 
     fig, axs = plt.subplots(2, len(panels), figsize=(7 * len(panels), 9), squeeze=False)
@@ -157,7 +161,7 @@ def main():
         axs[0, j].set_title(title)
     axs[0, 0].legend()
     fig.tight_layout()
-    save_path = os.path.join(os.path.dirname(__file__), '..', '..', 'plots', f'num_measurements_{label}.png')
+    save_path = os.path.join(PLOTS_DIR, f'num_measurements_{label}.png')
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     fig.savefig(save_path)
     plt.close(fig)

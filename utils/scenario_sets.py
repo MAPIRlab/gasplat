@@ -121,9 +121,13 @@ def cases_label(set_name: str, seeds: list[int] | None = None, scenario: str | N
 
 
 def add_case_arguments(parser, default_set: str = "tuning"):
-    """--set and --seeds options shared by the experiment scripts. A single scenario
-    is run with --scenario (an option of the configuration), which replaces the set."""
+    """--set, --seeds and --iteration options shared by the experiment scripts (pass them
+    to get_cases and cases_label). A single scenario is run with --scenario (an option of
+    the configuration), which replaces the set."""
     parser.add_argument("--set", default=default_set, choices=list(SETS),
                         help="Scenario set to run (ignored with --scenario)")
     parser.add_argument("--seeds", nargs="+", type=int, default=None,
                         help="Run procedural maps with these seeds instead of a set")
+    parser.add_argument("--iteration", type=int, default=ITERATION,
+                        help="Snapshot of the VGR simulations (one every 0.5 s; default: the last). "
+                             "Extract it first with scripts/tools/make_scenarios.py --iteration N")

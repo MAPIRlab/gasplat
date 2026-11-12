@@ -16,7 +16,8 @@ Parameters are given by name (concentration_lr) or with their group
 in main.py, and is kept fixed during the sweep.
 
 Every finished run is appended to a progress file in results/, so running the
-same command again after an interruption only runs what is missing.
+same command again after an interruption only runs what is missing. Runs go in
+parallel (--workers), so their times are only indicative.
 """
 import os
 import sys
@@ -31,12 +32,13 @@ from simple_parsing import ArgumentParser
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from config import Config
+from utils.paths import PLOTS_DIR, RESULTS_DIR
+from utils.cli import add_workers_argument
 from utils.scenario_sets import add_case_arguments, get_cases
 from utils.plot_utils import plot_sweep, set_publication_style
-from utils.experiment_utils import default_workers, yield_scenario_runs, save_experiment_results
+from utils.experiment_utils import batch_config, default_workers, yield_scenario_runs, save_experiment_results
 
 GROUPS = ("env", "sim", "train", "densify")
-RESULTS_DIR = "results"
 
 
 def resolve_param(cfg: Config, name: str) -> tuple[str, str]:
@@ -99,19 +101,15 @@ def main():
     parser.add_argument("--factors", nargs="+", type=float, default=[0.25, 0.5, 1, 2, 4, 8],
                         help="Multiples of the current value to try when --values is not given")
     add_case_arguments(parser)
-    parser.add_argument("--workers", type=int, default=None,
-                        help="Runs in parallel (default: one per GPU, or as many as the CPU cores allow)")
+    add_workers_argument(parser, timed=False)
     args = parser.parse_args()
     if args.values and len(args.params) > 1:
         sys.exit("--values can only be used with a single parameter")
 
-    cfg: Config = args.cfg
-    cfg.quiet = True
-    cfg.train.do_eval = False
-    cfg.train.live_vis = False
+    cfg: Config = batch_config(args.cfg)
     set_publication_style()
 
-    cases = get_cases(args.set, args.seeds, cfg.sim.scenario)
+    cases = get_cases(args.set, args.seeds, cfg.sim.scenario, iteration=args.iteration)
     workers = args.workers or default_workers(cfg)
     scenarios = [c.name for c in cases]
 
@@ -158,7 +156,7 @@ def main():
              "baseline": baseline},
         )
         plot_sweep(f"{group}.{attr}", values, runs, default,
-                   os.path.join(os.path.dirname(__file__), '..', '..', 'plots', f'sweep_{attr}.png'),
+                   os.path.join(PLOTS_DIR, f'sweep_{attr}.png'),
                    baseline=baseline)
         os.remove(progress)
 

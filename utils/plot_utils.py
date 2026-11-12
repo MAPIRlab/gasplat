@@ -9,6 +9,7 @@ from gs_model import GasSplattingModel
 from trainer import TrainingResults
 from utils.sim_utils import EnvironmentContext, MeasurementBatch
 from utils.init_utils import InitializationData
+from utils.paths import PLOTS_DIR
 
 def set_publication_style():
     """Configures Matplotlib global style"""
@@ -66,7 +67,7 @@ def plot_initial_guess(img_gt: np.ndarray | None, init_data: InitializationData,
         ax2.legend()
         
     # Save plot instead of showing it
-    save_path = os.path.join(os.path.dirname(__file__), '..', 'plots', 'initial_guess.png')
+    save_path = os.path.join(PLOTS_DIR, 'initial_guess.png')
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path)
     
@@ -244,7 +245,7 @@ def plot_training_results(gaussians: GasSplattingModel, batch: MeasurementBatch,
     ax5.grid(True, axis='y', ls="--", alpha=0.3)
 
     # Save plot instead of showing it
-    save_path = os.path.join(os.path.dirname(__file__), '..', 'plots', 'training_results.png')
+    save_path = os.path.join(PLOTS_DIR, 'training_results.png')
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     plt.savefig(save_path)
     print(f"[+] Training results plot saved in: {save_path}")

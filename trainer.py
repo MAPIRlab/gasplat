@@ -244,9 +244,9 @@ class Trainer:
         expected absolute error of sqrt(2/pi)*sigma*y, so the data loss (mean absolute residual over
         the concentration scale) reaches the noise at this level.
         """
-        if not self.cfg.train.noise_level:
+        if not self.cfg.train.known_noise_level:
             return None
-        return (math.sqrt(2 / math.pi) * self.cfg.train.noise_level
+        return (math.sqrt(2 / math.pi) * self.cfg.train.known_noise_level
                 * float(self.buffer_measurements.abs().mean()) / float(self.model.scale))
 
     def _densify(self):

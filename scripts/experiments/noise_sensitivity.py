@@ -11,11 +11,15 @@ levels differ only in the size of the error. Every method reconstructs the same
 measurements.
 
     python scripts/experiments/noise_sensitivity.py --scenario data/scenarios/10x6_empty_room_side_plume_h0.75_t1000 \\
-        --poses 4 8 --noise_levels 0 1 2 5 10 20 --repeats 5 --workers 4
+        --poses 4 8 --noise_levels 0 1 2 5 10 20 --runs 5
 
-With --discrepancy, GASPLAT is also run knowing the noise level (cfg.train.noise_level),
+With --discrepancy, GASPLAT is also run knowing the noise level (cfg.train.known_noise_level),
 as "Gas Splatting (discrepancy)": its training stops once the data residual reaches the
 noise (discrepancy principle). Without noise it is the same as GASPLAT.
+
+The script sets the seed, the number of poses and the noise of every run itself, so
+the options --seed, --num_poses, --noise, --noise_model, --noise_level and
+--known_noise_level are rejected.
 
 Results go to results/noise_sensitivity_<case>_<date>.json; the figure is made by
 scripts/figures/noise_figure.py. With --workers > 1 the times are only indicative.
@@ -32,10 +36,10 @@ from simple_parsing import ArgumentParser
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from config import Config
-from methods.registry import AVAILABLE_METHODS
+from utils.cli import add_methods_argument, add_workers_argument, reject_options
 from utils.scenario_sets import add_case_arguments, cases_label, get_cases
 from utils.sim_utils import generate_simulation_data
-from utils.experiment_utils import run_methods, save_experiment_results, yield_runs
+from utils.experiment_utils import batch_config, run_methods, save_experiment_results, total_time, yield_runs
 
 KEYS = ("nrmse", "peak_ratio", "peak_distance", "mass_error", "time")
 DISCREPANCY = "Gas Splatting (discrepancy)"
@@ -46,7 +50,7 @@ def run_level(cfg: Config, methods: list[str], discrepancy: bool = False) -> dic
     metrics, _ = run_methods(batch, environment, cfg, methods)
     if discrepancy:
         known = copy.deepcopy(cfg)
-        known.train.noise_level = cfg.sim.noise_level if cfg.sim.noise else None
+        known.train.known_noise_level = cfg.sim.noise_level if cfg.sim.noise else None
         metrics[DISCREPANCY] = run_methods(batch, environment, known, ["Gas Splatting"])[0]["Gas Splatting"]
     y = environment.ground_truth.y_true
     rel = float(((batch.measurements - y).norm() / y.norm().clamp_min(1e-12)).item())
@@ -60,25 +64,28 @@ def main():
     parser.add_argument("--poses", nargs="+", type=int, default=[4, 8], help="Numbers of vantage poses")
     parser.add_argument("--noise_levels", nargs="+", type=float, default=[0, 1, 2, 5, 10, 20],
                         help="Noise levels: std of each measurement's error, in %% of its value")
-    parser.add_argument("--methods", nargs="+", default=list(AVAILABLE_METHODS), choices=list(AVAILABLE_METHODS))
-    parser.add_argument("--repeats", type=int, default=5, help="Runs per level, seeds 0..N-1")
-    parser.add_argument("--workers", type=int, default=1, help="Runs in parallel (times become indicative)")
+    add_methods_argument(parser)
+    parser.add_argument("--runs", type=int, default=5, help="Runs per level, seeds 0..N-1")
+    add_workers_argument(parser)
     parser.add_argument("--discrepancy", action="store_true",
                         help="Also run GASPLAT knowing the noise level (stops at the discrepancy principle)")
     args = parser.parse_args()
-    cfg: Config = args.cfg
-    cfg.quiet, cfg.train.do_eval, cfg.train.live_vis = True, False, False
+    reject_options(parser, {"sim.seed": "run r uses seed r (--runs)", "sim.num_poses": "set by --poses",
+                            "sim.noise": "set by --noise_levels", "sim.noise_model": "always proportional",
+                            "sim.noise_level": "set by --noise_levels",
+                            "train.known_noise_level": "set by --discrepancy"})
+    cfg: Config = batch_config(args.cfg)
     cfg.sim.noise_model = "proportional"
 
-    cases = get_cases(args.set, args.seeds, cfg.sim.scenario)
+    cases = get_cases(args.set, args.seeds, cfg.sim.scenario, iteration=args.iteration)
     if cases[0].scenario is None:
         sys.exit("The noise experiment uses GADEN scenarios (vantage poses)")
-    label = cases_label(args.set, args.seeds, cfg.sim.scenario)
+    label = cases_label(args.set, args.seeds, cfg.sim.scenario, args.iteration)
     tasks = []
     for c in cases:
         for p in args.poses:
             for level in args.noise_levels:
-                for r in range(args.repeats):
+                for r in range(args.runs):
                     case_cfg = c.apply(cfg)
                     case_cfg.sim.num_poses, case_cfg.sim.seed = p, r
                     case_cfg.sim.noise, case_cfg.sim.noise_level = level > 0, level / 100
@@ -93,15 +100,15 @@ def main():
     summary = {}
     for n in names:
         for p in args.poses:
-            print(f"\n{n}, {p} poses: NRMSE % (mean ± std over {args.repeats} runs)")
+            print(f"\n{n}, {p} poses: NRMSE % (mean ± std over {args.runs} runs)")
             print(f"  {'noise %':18s}" + "".join(f"{level:>12g}" for level in args.noise_levels))
             for m in methods:
                 row = []
                 for level in args.noise_levels:
-                    runs = [results[(n, p, level, r)]["metrics"][m] for r in range(args.repeats)]
+                    runs = [results[(n, p, level, r)]["metrics"][m] for r in range(args.runs)]
                     stats = {}
                     for k in KEYS:
-                        v = [x[k] + (x.get("matrix_time") or 0.0) if k == "time" else x[k] for x in runs]
+                        v = [total_time(x) if k == "time" else x[k] for x in runs]
                         stats[k], stats[k + "_std"] = float(np.mean(v)), float(np.std(v))
                     summary.setdefault(n, {}).setdefault(str(p), {}).setdefault(m, {})[str(level)] = stats
                     row.append(f"{100 * stats['nrmse']:6.2f}±{100 * stats['nrmse_std']:4.2f}")
@@ -110,9 +117,9 @@ def main():
     save_experiment_results(
         {"experiment_name": f"noise_sensitivity_{label}", "cases": names, "poses": args.poses,
          "noise_levels": args.noise_levels, "noise_model": "proportional", "methods": methods,
-         "repeats": args.repeats, "workers": args.workers, "config": dataclasses.asdict(cfg)},
+         "repeats": args.runs, "workers": args.workers, "iteration": args.iteration, "config": dataclasses.asdict(cfg)},
         {"runs": [{"case": n, "poses": p, "noise_level": level, "seed": r, **results[(n, p, level, r)]}
-                  for n in names for p in args.poses for level in args.noise_levels for r in range(args.repeats)],
+                  for n in names for p in args.poses for level in args.noise_levels for r in range(args.runs)],
          "summary": summary})
 
 

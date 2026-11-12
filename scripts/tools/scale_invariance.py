@@ -12,7 +12,9 @@ decisions, so float rounding alone ends up in a different set of Gaussians
 after many iterations, at any scale. The check therefore runs on the CPU,
 whose rounding is smallest, and only for a short run that includes the first
 densification step (--iterations, 200 by default); a scale dependence shows up
-there as a large difference, while rounding stays far below the tolerance.
+there as a large difference, while rounding stays far below the tolerance. Early
+stopping is off, so that every factor runs the same number of iterations, and the
+device is always the CPU: --early_stopping_patience and --device_type are rejected.
 
     python scripts/tools/scale_invariance.py [--scenario DIR] [--factors 0.01 1 100]
 
@@ -27,11 +29,13 @@ from simple_parsing import ArgumentParser
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from config import Config
+from config import Config, EnvironmentParams, SimulationParams, TrainParams, DensificationParams
 from trainer import Trainer
+from utils.cli import reject_options
+from utils.metrics import gas_map_metrics
 from utils.init_utils import setup_gs_model
 from utils.scenario_sets import scenario_dirs
-from utils.experiment_utils import gas_map_metrics
+from utils.experiment_utils import batch_config
 from utils.sim_utils import EnvironmentContext, GroundTruth, MeasurementBatch, generate_simulation_data
 
 MAP_TOLERANCE = 1e-3     # max |map / factor - reference map|, relative to the true peak
@@ -68,16 +72,16 @@ def check(cfg: Config, factors: list[float], label: str) -> bool:
 
 def main():
     parser = ArgumentParser(description="Check that results do not depend on the concentration level")
-    parser.add_arguments(Config, dest="cfg")
-    parser.add_argument("--factors", nargs="+", type=float, default=[0.01, 1, 100])
+    # A short run by default (see above)
+    default = Config(EnvironmentParams(), SimulationParams(), TrainParams(iterations=200), DensificationParams())
+    parser.add_arguments(Config, dest="cfg", default=default)
+    parser.add_argument("--factors", nargs="+", type=float, default=[0.01, 1, 100],
+                        help="Factors the measurements are multiplied by")
     args = parser.parse_args()
-    cfg: Config = args.cfg
-    cfg.quiet = True
-    cfg.train.do_eval = False
-    cfg.train.live_vis = False
+    reject_options(parser, {"train.early_stopping_patience": "early stopping is off (--iterations sets the length)",
+                            "device_type": "the check runs on the CPU"})
+    cfg: Config = batch_config(args.cfg)
     cfg.device_type = "cpu"
-    if "--iterations" not in sys.argv:
-        cfg.train.iterations = 200
     # No early stopping: a fixed number of iterations for every factor
     cfg.train.early_stopping_patience = cfg.train.iterations
 

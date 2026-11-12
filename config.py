@@ -1,26 +1,27 @@
 import torch
 
-from typing import Optional, Tuple
+import dataclasses
+from typing import Literal, Optional, Tuple
 from dataclasses import dataclass
 from simple_parsing import field
 
 @dataclass
 class EnvironmentParams:
-    map_size: Tuple[float, float] = (20.0, 20.0) # Map size (map_width, map_height) in meters. Ignored when a csv file is provided
-    cell_size: float = 1.0 # Cell size in meters
+    map_size: Tuple[float, float] = (20.0, 20.0) # Map size (map_width, map_height) in meters, of procedural maps. Scenario packages set their own
+    cell_size: float = 1.0 # Cell size in meters, of procedural maps. Scenario packages set their own
 
 @dataclass
 class SimulationParams:
+    """Simulated measurements. The fields from scenario on apply to GADEN scenarios (see utils/gaden_utils.py)"""
     seed: Optional[int] = 0 # Seed for the simulated data (gas map, beams, noise). None: different data on every run
     num_beams: int = 100 # Total number of TDLAS beams (procedural maps; scenarios use angular_step)
     
     noise: bool = field(default=False, action="store_true") # Add noise to simulated measurements
     snr_db: int = 30 # Signal-to-noise ratio (dB)
     noise_floor: float = 0.0 # Absolute noise std added on top of the SNR noise (ppm*m)
-    noise_model: str = "additive" # additive: same std for every beam (snr_db, noise_floor); proportional: std = noise_level * each beam's value
+    noise_model: Literal["additive", "proportional"] = "additive" # additive: same std for every beam (snr_db, noise_floor); proportional: std = noise_level * each beam's value
     noise_level: float = 0.05 # Relative std of the proportional noise
 
-    # --- GADEN scenarios (see utils/gaden_utils.py) ---
     scenario: Optional[str] = None # Scenario package directory. Overrides map/cell size. If None, a procedural map is generated
     num_poses: Optional[int] = None # Robot vantage poses. None: as many as the coverage target needs
     angular_step: float = 6.0 # Angle between consecutive beams of the sweep at each pose (deg)
@@ -48,7 +49,7 @@ class TrainParams:
     early_stopping_patience: int = 50       # How many iterations to wait for an improvement
     early_stopping_min_delta: float = 2e-2  # Minimum relative improvement of the smoothed loss that resets the patience counter
     ema_alpha: float = 0.6                  # Smoothing factor (Lower = smoother, more memory of past loss)
-    noise_level: Optional[float] = None     # Known relative std of the measurement noise (fraction of each reading). If set, training stops once the smoothed data residual reaches it (discrepancy principle)
+    known_noise_level: Optional[float] = None   # Known relative std of the measurement noise (fraction of each reading). If set, training stops once the smoothed data residual reaches it (discrepancy principle)
 
     do_eval: bool = field(default=False, action="store_true") # Evaluate model during training using ground truth
     eval_interval: int = 25 # Model evaluation interval
@@ -88,3 +89,33 @@ class Config:
             print("Warning: CUDA requested but not available. Using CPU.")
             return torch.device("cpu")
         return torch.device(self.device_type)
+
+
+# Fields renamed since older result files were saved: {(group, old name): new name}
+RENAMED_FIELDS = {("train", "noise_level"): "known_noise_level"}
+
+
+def config_from_dict(d: dict) -> Config:
+    """Configuration saved with an experiment (dataclasses.asdict of a Config, as in the
+    "config" of the result files). Renamed fields of older files (RENAMED_FIELDS) are
+    read under their new name; fields this version does not have are ignored, and
+    missing ones keep their default."""
+    def build(cls, values: dict, group: str | None = None):
+        known = {f.name: f for f in dataclasses.fields(cls)}
+        kwargs = {}
+        for name, value in values.items():
+            name = RENAMED_FIELDS.get((group, name), name)
+            if name not in known:
+                continue
+            f = known[name]
+            if dataclasses.is_dataclass(f.type):
+                value = build(f.type, value, name)
+            elif isinstance(value, list):   # JSON keeps tuples as lists
+                value = tuple(value)
+            kwargs[name] = value
+        # The parameter groups have no defaults of their own
+        for name, f in known.items():
+            if dataclasses.is_dataclass(f.type) and name not in kwargs:
+                kwargs[name] = f.type()
+        return cls(**kwargs)
+    return build(Config, d)

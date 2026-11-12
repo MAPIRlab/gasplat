@@ -1,6 +1,6 @@
 """
 Runs GASPLAT on a scenario set (see utils/scenario_sets.py) and reports, for
-every scenario, the reconstruction metrics of utils.experiment_utils.gas_map_metrics.
+every scenario, the reconstruction metrics of utils.metrics.gas_map_metrics.
 Meant to be run after any change to check that nothing got worse. Any
 configuration option can be overridden from the command line, which also makes
 ablations a single run each (e.g. --original_dens for the 3DGS densification).
@@ -22,9 +22,11 @@ from simple_parsing import ArgumentParser
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from config import Config
+from utils.paths import PLOTS_DIR
+from utils.cli import add_workers_argument
 from utils.scenario_sets import add_case_arguments, cases_label, get_cases
 from utils.plot_utils import plot_reconstruction_grid, set_publication_style
-from utils.experiment_utils import default_workers, yield_scenario_runs, save_experiment_results
+from utils.experiment_utils import batch_config, default_workers, yield_scenario_runs, save_experiment_results
 
 COLUMNS = [("nrmse", "NRMSE %", 100, ".2f"), ("peak_ratio", "peak", 1, ".2f"), ("mass_error", "mass %", 100, "+.1f"),
            ("leak", "leak %", 100, ".2f"), ("gaussians", "gauss", 1, "d"), ("poses", "poses", 1, "d"),
@@ -45,18 +47,14 @@ def main():
     parser = ArgumentParser(description="Benchmark GASPLAT on a set of GADEN scenarios")
     parser.add_arguments(Config, dest="cfg")
     add_case_arguments(parser)
-    parser.add_argument("--workers", type=int, default=None,
-                        help="Runs in parallel (default: one per GPU, or as many as the CPU cores allow)")
+    add_workers_argument(parser, timed=False)
     args = parser.parse_args()
-    cfg: Config = args.cfg
-    cfg.quiet = True
-    cfg.train.do_eval = False
-    cfg.train.live_vis = False
+    cfg: Config = batch_config(args.cfg)
 
     set_publication_style()
-    cases = get_cases(args.set, args.seeds, cfg.sim.scenario)
+    cases = get_cases(args.set, args.seeds, cfg.sim.scenario, iteration=args.iteration)
     workers = args.workers or default_workers(cfg)
-    label = cases_label(args.set, args.seeds, cfg.sim.scenario)
+    label = cases_label(args.set, args.seeds, cfg.sim.scenario, args.iteration)
     tasks = [(c.name, c.apply(cfg)) for c in cases]
 
     metrics, maps = {}, {}
@@ -76,7 +74,7 @@ def main():
     plot_reconstruction_grid(
         names, maps, {"GASPLAT": {n: maps[n]["pred"] for n in names}},
         {("GASPLAT", n): f"NRMSE {100 * metrics[n]['nrmse']:.1f}%\npeak x{metrics[n]['peak_ratio']:.2f}" for n in names},
-        os.path.join(os.path.dirname(__file__), '..', '..', 'plots', f'benchmark_{label}.png'),
+        os.path.join(PLOTS_DIR, f'benchmark_{label}.png'),
         title=f"Benchmark ({label})")
 
 

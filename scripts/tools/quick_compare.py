@@ -22,22 +22,20 @@ from simple_parsing import ArgumentParser
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from config import Config
-from methods.registry import AVAILABLE_METHODS
+from utils.paths import PLOTS_DIR
+from utils.cli import add_methods_argument
 from utils.scenario_sets import case_name
 from utils.sim_utils import generate_simulation_data
 from utils.plot_utils import draw_beams, set_publication_style
-from utils.experiment_utils import RUN_THREADS, run_methods
+from utils.experiment_utils import RUN_THREADS, batch_config, run_methods, total_time
 
 
 def main():
     parser = ArgumentParser(description="Reconstructions of every method on one case, side by side")
     parser.add_arguments(Config, dest="cfg")
-    parser.add_argument("--methods", nargs="+", default=list(AVAILABLE_METHODS), choices=list(AVAILABLE_METHODS))
+    add_methods_argument(parser)
     args = parser.parse_args()
-    cfg: Config = args.cfg
-    cfg.quiet = True
-    cfg.train.do_eval = False
-    cfg.train.live_vis = False
+    cfg: Config = batch_config(args.cfg)
     torch.set_num_threads(RUN_THREADS)
     set_publication_style()
 
@@ -55,7 +53,7 @@ def main():
     for m in args.methods:
         x = metrics[m]
         nrmse = f"{100 * x['nrmse']:8.2f}" if gt is not None else f"{'-':>8s}"
-        print(f"  {m:18s} {nrmse} {x['time'] + (x['matrix_time'] or 0.0):8.2f}")
+        print(f"  {m:18s} {nrmse} {total_time(x):8.2f}")
 
     # First panel: the ground truth, or the beams over an empty map
     first = ("Ground truth", gt if gt is not None else np.zeros(shape))
@@ -71,7 +69,7 @@ def main():
         ax.imshow(walls, origin='lower', extent=extent, cmap='Greys', vmin=0, vmax=2.5, interpolation='nearest')
         if title in metrics:
             x = metrics[title]
-            time_s = x["time"] + (x["matrix_time"] or 0.0)
+            time_s = total_time(x)
             title += f"\nNRMSE {100 * x['nrmse']:.1f}%, {time_s:.2f} s" if gt is not None else \
                      f"\npeak {vmax:.3g} ppm, {time_s:.2f} s"
             if gt is None:   # own scale: a colorbar of the map's height
@@ -85,7 +83,7 @@ def main():
         fig.colorbar(im, ax=axs.ravel().tolist(), label="ppm", fraction=0.02, pad=0.02)
     fig.suptitle(name)
 
-    save_path = os.path.join(os.path.dirname(__file__), '..', '..', 'plots', f'quick_compare_{name}.png')
+    save_path = os.path.join(PLOTS_DIR, f'quick_compare_{name}.png')
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     fig.savefig(save_path)
     plt.close(fig)

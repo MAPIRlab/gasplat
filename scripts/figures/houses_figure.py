@@ -34,7 +34,7 @@ from matplotlib.patches import Patch
 
 ROOT = os.path.join(os.path.dirname(__file__), '..', '..')
 sys.path.append(os.path.abspath(ROOT))
-from utils.experiment_utils import gas_map_metrics
+from utils.metrics import gas_map_metrics
 plt.rcParams.update({
     "font.family": "STIXGeneral", "mathtext.fontset": "stix", "axes.formatter.use_mathtext": True,
     "axes.unicode_minus": False, "font.size": 9, "axes.titlesize": 9.5, "axes.labelsize": 9,

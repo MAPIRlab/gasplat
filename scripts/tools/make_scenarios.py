@@ -30,7 +30,7 @@ def main():
     parser.add_argument("--set", default="all", choices=["tuning", "held_out", "all"])
     parser.add_argument("--root", default=DEFAULT_ROOT, help="Where to write the scenario packages")
     parser.add_argument("--overwrite", action="store_true", help="Extract again scenarios that already exist")
-    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--workers", type=int, default=8, help="Scenarios extracted in parallel")
     parser.add_argument("--iteration", type=int, default=ITERATION,
                         help="Snapshot of the simulations (one every 0.5 s; default: the last)")
     args = parser.parse_args()

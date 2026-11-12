@@ -27,6 +27,7 @@ import gs_model
 import trainer as trainer_module
 from config import Config
 from utils.scenario_sets import case_name
+from utils.experiment_utils import batch_config
 from utils.sim_utils import generate_simulation_data
 from utils.init_utils import setup_gs_model
 
@@ -91,10 +92,7 @@ def main():
     parser.add_arguments(Config, dest="cfg")
     parser.add_argument("--threads", type=int, default=4, help="CPU threads of PyTorch")
     args = parser.parse_args()
-    cfg: Config = args.cfg
-    cfg.quiet = True
-    cfg.train.do_eval = False
-    cfg.train.live_vis = False
+    cfg: Config = batch_config(args.cfg)
     torch.set_num_threads(args.threads)
 
     batch, environment = generate_simulation_data(cfg)

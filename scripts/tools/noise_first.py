@@ -14,7 +14,7 @@ leaves every relative threshold off by the ratio between noise and gas.
     python scripts/tools/noise_first.py [--scenario DIR] [--num_batches 5] [--noise_floor 2.0]
 
 Without --scenario, the first scenario of the tuning set is used. Noise is
-always added (absolute noise_floor plus the relative snr_db).
+always added (absolute noise_floor, 2 ppm*m by default, plus the relative snr_db).
 """
 import os
 import sys
@@ -26,12 +26,14 @@ from simple_parsing import ArgumentParser
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from config import Config
+from config import Config, EnvironmentParams, SimulationParams, TrainParams, DensificationParams
 from trainer import Trainer
+from utils.paths import PLOTS_DIR
+from utils.metrics import gas_map_metrics
 from utils.init_utils import setup_gs_model
 from utils.scenario_sets import scenario_dirs
 from utils.plot_utils import set_publication_style
-from utils.experiment_utils import gas_map_metrics
+from utils.experiment_utils import batch_config
 from utils.sim_utils import MeasurementBatch, generate_simulation_data
 
 
@@ -67,16 +69,13 @@ def run(batches: list[MeasurementBatch], environment, cfg: Config, fixed_scale: 
 
 def main():
     parser = ArgumentParser(description="Incremental run whose first batches only measure noise")
-    parser.add_arguments(Config, dest="cfg")
-    parser.add_argument("--num_batches", type=int, default=5)
+    # Noise always on, with an absolute floor by default (see above)
+    default = Config(EnvironmentParams(), SimulationParams(noise=True, noise_floor=2.0), TrainParams(),
+                     DensificationParams())
+    parser.add_arguments(Config, dest="cfg", default=default)
+    parser.add_argument("--num_batches", type=int, default=5, help="Batches of poses, visited one after the other")
     args = parser.parse_args()
-    cfg: Config = args.cfg
-    cfg.quiet = True
-    cfg.train.do_eval = False
-    cfg.train.live_vis = False
-    cfg.sim.noise = True
-    if cfg.sim.noise_floor == 0:
-        cfg.sim.noise_floor = 2.0
+    cfg: Config = batch_config(args.cfg)
     if not cfg.sim.scenario:
         cfg.sim.scenario = scenario_dirs("tuning")[0]
     set_publication_style()
@@ -117,7 +116,7 @@ def main():
     axs[0].legend(fontsize=10)
     fig.suptitle(f"Noise-first incremental run on {name.split('_h')[0]}")
     fig.tight_layout()
-    save_path = os.path.join(os.path.dirname(__file__), '..', '..', 'plots', 'noise_first.png')
+    save_path = os.path.join(PLOTS_DIR, 'noise_first.png')
     fig.savefig(save_path)
     plt.close(fig)
     print(f"[+] Plot saved in: {save_path}")

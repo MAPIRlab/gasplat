@@ -11,11 +11,14 @@ no line of sight from any pose, seen along a single direction, covered from two
 poses at least cfg.sim.min_crossing_angle apart), and the error and the gas are
 reported per region (gas_map_metrics).
 
-    python scripts/experiments/random_poses.py --set all --runs 100 --workers 4
+    python scripts/experiments/random_poses.py --set all --runs 100
     python scripts/experiments/random_poses.py --set held_out --iteration 200 --runs 100 --workers 4
 
 --iteration runs the VGR houses at an earlier snapshot of their simulation (one every
-0.5 s; extract it first with scripts/tools/make_scenarios.py --iteration N).
+0.5 s; extract it first with scripts/tools/make_scenarios.py --iteration N). Runs go
+one at a time unless --workers says otherwise, so that the times are valid. The
+seed of every run and the random placement are set by the script, so --seed and
+--random_poses are rejected.
 
 Runs are appended to results/random_poses_<set>.jsonl as they finish; rerunning
 the same command skips the runs already there. The maps of the first --keep_maps
@@ -37,16 +40,16 @@ from simple_parsing import ArgumentParser
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from config import Config
-from methods.registry import AVAILABLE_METHODS
-from utils.scenario_sets import ITERATION, add_case_arguments, cases_label, get_cases
+from utils.paths import RESULTS_DIR
+from utils.cli import add_methods_argument, add_workers_argument, reject_options
+from utils.scenario_sets import add_case_arguments, cases_label, get_cases
 from utils.sim_utils import generate_simulation_data
-from utils.experiment_utils import (REGIONS, default_workers, observation_levels, pose_positions, run_methods,
-                                    save_experiment_results, yield_runs)
+from utils.metrics import REGIONS, observation_levels, pose_positions
+from utils.experiment_utils import batch_config, run_methods, save_experiment_results, total_time, yield_runs
 
 GASPLAT = "Gas Splatting"
 NO_PENALTY = "Gas Splatting (no penalty)"
 MIN_AREA = 0.01     # share of the free cells below which a region's NRMSE is not averaged
-RESULTS = os.path.join(os.path.dirname(__file__), '..', '..', 'results')
 
 
 def run_case(cfg: Config, methods: list[str], keep_maps: bool) -> dict:
@@ -80,8 +83,8 @@ def summarize(runs: list[dict], names: list[str], methods: list[str]) -> dict:
         for m in methods:
             out = {}
             for k in keys:
-                v = np.array([r["metrics"][m].get(k, np.nan) + ((r["metrics"][m].get("matrix_time") or 0.0)
-                                                                  if k == "time" else 0.0) for r in rs], dtype=float)
+                v = np.array([total_time(r["metrics"][m]) if k == "time" else r["metrics"][m].get(k, np.nan)
+                              for r in rs], dtype=float)
                 if k.startswith("nrmse_"):
                     area = np.array([r["metrics"][m][k.replace("nrmse", "area")] for r in rs])
                     v = np.where(area >= MIN_AREA, v, np.nan)
@@ -103,15 +106,13 @@ def main():
     parser = ArgumentParser(description="Compare the methods over random pose placements")
     parser.add_arguments(Config, dest="cfg")
     add_case_arguments(parser)
-    parser.add_argument("--methods", nargs="+", default=list(AVAILABLE_METHODS), choices=list(AVAILABLE_METHODS))
+    add_methods_argument(parser)
     parser.add_argument("--runs", type=int, default=100, help="Random pose placements per case, seeds 0..N-1")
     parser.add_argument("--keep_maps", type=int, default=3, help="Save the maps of the first N runs of every case")
-    parser.add_argument("--workers", type=int, default=None, help="Runs in parallel (default: as many as fit)")
-    parser.add_argument("--iteration", type=int, default=ITERATION,
-                        help="Snapshot of the VGR simulations (one every 0.5 s; default: the last)")
+    add_workers_argument(parser)
     args = parser.parse_args()
-    cfg: Config = args.cfg
-    cfg.quiet, cfg.train.do_eval, cfg.train.live_vis = True, False, False
+    reject_options(parser, {"sim.seed": "run r uses seed r (--runs)", "sim.random_poses": "always on"})
+    cfg: Config = batch_config(args.cfg)
     cfg.sim.random_poses = True
 
     cases = get_cases(args.set, args.seeds, cfg.sim.scenario, iteration=args.iteration)
@@ -119,9 +120,9 @@ def main():
         sys.exit("Random poses apply to GADEN scenarios")
     label = cases_label(args.set, args.seeds, cfg.sim.scenario, args.iteration)
     methods = args.methods + ([NO_PENALTY] if GASPLAT in args.methods else [])
-    os.makedirs(RESULTS, exist_ok=True)
-    log = os.path.join(RESULTS, f"random_poses_{label}.jsonl")
-    maps_dir = os.path.join(RESULTS, f"random_poses_{label}_maps")
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    log = os.path.join(RESULTS_DIR, f"random_poses_{label}.jsonl")
+    maps_dir = os.path.join(RESULTS_DIR, f"random_poses_{label}_maps")
     done = set()
     if os.path.exists(log):
         with open(log) as f:
@@ -136,9 +137,8 @@ def main():
             case_cfg.sim.seed = r
             tasks.append(((c.name, r), case_cfg, {"keep_maps": r < args.keep_maps}))
     print(f"{len(tasks)} runs to do, {len(done)} already in {log}")
-    workers = args.workers or default_workers(cfg)
     for (name, r), result, device in tqdm(yield_runs(functools.partial(run_case, methods=args.methods), tasks,
-                                                     workers, warmup=True), total=len(tasks), desc="Runs"):
+                                                     args.workers, warmup=True), total=len(tasks), desc="Runs"):
         maps = result.pop("maps", None)
         if maps is not None:
             os.makedirs(maps_dir, exist_ok=True)
