@@ -77,7 +77,7 @@ def instrument(sync):
     patch(gs_model, "compute_sparse_integral", "forward: closed-form integrals of the pairs")
     patch(M, "get_covariance_inverse", "covariance inverse (R S^-2 R^T)")
     patch(M, "get_covariance", "covariance (R S^2 R^T, obstacle term)")
-    patch(trainer_module.F, "grid_sample", "obstacle term: distance field lookups")
+    patch(torch.nn.functional, "grid_sample", "obstacle term: distance field lookups")
     patch(M, "update_accum_gradient", "densification statistic accumulation")
     patch(torch.optim.Adam, "step", "Adam step")
     patch(M, "project_positions", "projection onto the map")

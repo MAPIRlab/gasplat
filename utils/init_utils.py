@@ -67,19 +67,18 @@ def setup_gs_model(batch: MeasurementBatch, cfg: Config) -> tuple[GasSplattingMo
     # Set the scale first: initial concentrations are relative to it
     batch_scale = estimate_concentration_scale(batch.beams, batch.measurements)
 
+    # With no candidate position, a single random Gaussian
+    model = GasSplattingModel(max(initial_gaussians, 1), cfg).to(cfg.device)
+    if batch_scale > 0:
+        model.set_concentration_scale(batch_scale)
+
     if initial_gaussians > 0:
-        model = GasSplattingModel(initial_gaussians, cfg).to(cfg.device)
-        if batch_scale > 0:
-            model.set_concentration_scale(batch_scale)
         model.initialize_gaussians(
             init_data.pos.to(cfg.device), 
             init_data.concentration.to(cfg.device), 
             init_data.std.to(cfg.device)
         )
     else:
-        model = GasSplattingModel(1, cfg).to(cfg.device)
-        if batch_scale > 0:
-            model.set_concentration_scale(batch_scale)
         init_data.pos = model.get_pos().detach().cpu()
 
     if model._pos.is_cuda:

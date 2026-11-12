@@ -1,7 +1,18 @@
+from __future__ import annotations
+
 import numpy as np
 import scipy.ndimage as ndimage
+import torch
+import torch.nn.functional as F
+from dataclasses import dataclass
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from config import Config
+    from gs_model import GasSplattingModel
+    from utils.sim_utils import EnvironmentContext
 
 
 def add_rectangle(
@@ -175,3 +186,85 @@ def compute_aasdf(
     ]) * cell_size
 
     return np.clip(distances, -max_dist, max_dist).astype(np.float32)
+
+
+@dataclass
+class DistanceFields:
+    """Distance fields used by the obstacle penalty L_obs, all in meters, on the device:
+    the ESDF D (1, 1, H, W), its gradient (1, 2, H, W) and the AA-SDF D_x, D_y (1, 2, H, W)."""
+    esdf: torch.Tensor
+    esdf_grad: torch.Tensor
+    aasdf: torch.Tensor
+
+    @classmethod
+    def from_environment(cls, environment: EnvironmentContext | None, cfg: Config) -> DistanceFields | None:
+        """Fields of the obstacle map of the environment, None without one."""
+        if not environment or environment.obstacles is None:
+            return None
+
+        esdf = compute_esdf(environment.obstacles, cell_size=cfg.env.cell_size)
+        dev = cfg.device
+        aasdf = compute_aasdf(
+            environment.obstacles,
+            cell_size=cfg.env.cell_size,
+            max_dist=float(max(cfg.env.map_size)),
+        )
+        return cls(
+            esdf=torch.tensor(esdf, dtype=torch.float32, device=dev).unsqueeze(0).unsqueeze(0),
+            esdf_grad=torch.tensor(compute_esdf_gradient(esdf), dtype=torch.float32, device=dev).unsqueeze(0),
+            aasdf=torch.tensor(aasdf, dtype=torch.float32, device=dev).unsqueeze(0),
+        )
+
+
+def _sample(field: torch.Tensor, grid: torch.Tensor) -> torch.Tensor:
+    """Bilinear lookup of a field (1, C, H, W) at the points of a grid (1, 1, K, 2)
+    normalized to [-1, 1]: (1, C, 1, K) -> (K, C)."""
+    return F.grid_sample(
+        field, grid,
+        mode='bilinear', padding_mode='border', align_corners=False
+    ).squeeze(0).squeeze(1).transpose(0, 1)
+
+
+def obstacle_penalty(model: GasSplattingModel, fields: DistanceFields, cfg: Config) -> torch.Tensor:
+    """Obstacle penalty L_obs: ESDF and AA-SDF terms, complementary. A Gaussian is
+    penalized when the obstacle surface lies closer than obstacle_sigma_k standard
+    deviations, measured along the normal to the nearest surface (ESDF) and along
+    each coordinate axis (AA-SDF)."""
+    pos = model.get_pos()                      # (K, 2)
+    Sigma = model.get_covariance()             # (K, 2, 2)
+    concentrations = model.get_concentration() # (K,)
+
+    # Normalize positions to [-1, 1] for grid sampling
+    map_w, map_h = model.map_size[0], model.map_size[1]
+    norm_x = (pos[:, 0] / map_w) * 2.0 - 1.0
+    norm_y = (pos[:, 1] / map_h) * 2.0 - 1.0
+    grid = torch.stack([norm_x, norm_y], dim=-1).view(1, 1, -1, 2) # (1, 1, K, 2)
+
+    # --- ESDF term ---
+    esdf_at_mu = _sample(fields.esdf, grid).squeeze(1)  # D(mu_k): (K,)
+    esdf_grad_at_mu = _sample(fields.esdf_grad, grid)   # grad D(mu_k): (K, 2)
+
+    # Unit normal n_k pointing away from the nearest surface
+    n = F.normalize(esdf_grad_at_mu, p=2, dim=-1, eps=1e-6) # (K, 2)
+
+    # Variance along the normal, n^T Sigma n: (K, 1, 2) @ (K, 2, 2) @ (K, 2, 1) -> (K,)
+    normal_variance = torch.bmm(
+        n.unsqueeze(1), torch.bmm(Sigma, n.unsqueeze(-1))
+    ).view(-1)
+    sigma_n = torch.sqrt(torch.clamp(normal_variance, min=1e-7))
+
+    esdf_violation = F.relu(cfg.train.obstacle_sigma_k * sigma_n - esdf_at_mu)
+
+    # --- AA-SDF term ---
+    aasdf_at_mu = _sample(fields.aasdf, grid)  # (D_x(mu_k), D_y(mu_k)): (K, 2)
+
+    # Along the coordinate axes the variance reduces to the diagonal of Sigma: (K, 2)
+    sigma_axis = torch.sqrt(torch.clamp(torch.diagonal(Sigma, dim1=1, dim2=2), min=1e-7))
+
+    aasdf_violation = F.relu(cfg.train.obstacle_sigma_k * sigma_axis - aasdf_at_mu)
+
+    # Weight by sg(rho_k): keeps the penalty commensurate with the data
+    # term, and stops fading a Gaussian out from dodging it.
+    return cfg.train.obstacle_lambda * torch.sum(
+        (esdf_violation + aasdf_violation.sum(dim=-1)) * concentrations.detach()
+    ) / model.scale

@@ -3,7 +3,6 @@ import math
 import time
 import torch
 import numpy as np
-import torch.nn.functional as F
 from tqdm import tqdm
 from dataclasses import dataclass, field
 from typing import List, Dict
@@ -13,7 +12,7 @@ from gs_model import GasSplattingModel
 from utils.sim_utils import EnvironmentContext, MeasurementBatch
 from utils.densification_utils import extract_candidate_positions, injection_scale
 from utils.gaussian_utils import estimate_concentration_scale
-from utils.obstacle_utils import compute_esdf, compute_esdf_gradient, compute_aasdf
+from utils.obstacle_utils import DistanceFields, obstacle_penalty
 
 
 @dataclass
@@ -31,7 +30,7 @@ class TrainingResults:
 
 def get_exp_lr_func(lr_init, lr_final, max_steps):
     def lr_func(step):
-        if step < 0 or (lr_init == 0.0 and lr_final == 0.0):
+        if lr_init == 0.0 and lr_final == 0.0:
             return 0.0
         
         t = np.clip(step / max_steps, 0, 1)
@@ -39,8 +38,53 @@ def get_exp_lr_func(lr_init, lr_final, max_steps):
 
     return lr_func
 
+
+class EarlyStopping:
+    """Decides when to stop training a batch, from the losses of every iteration.
+
+    Two rules, checked in this order:
+    - Discrepancy principle (only with a known noise level, after densify_from): stop once
+      the smoothed data loss is as large as the noise, since fitting further fits the noise.
+    - Patience (after densify_until): stop once the smoothed total loss has not improved
+      for early_stopping_patience iterations.
+    """
+    def __init__(self, cfg: Config, discrepancy: float | None = None):
+        self.cfg = cfg
+        self.discrepancy = discrepancy
+        self.ema_loss = None
+        self.best_ema_loss = float('inf')
+        self.patience_counter = 0
+        self.ema_data_loss = None
+
+    def _ema(self, average: float | None, value: float) -> float:
+        a = self.cfg.train.ema_alpha
+        return value if average is None else (a * value) + ((1 - a) * average)
+
+    def update(self, total_loss: float, data_loss: float, iteration: int) -> str | None:
+        """Takes the losses of one iteration. Returns why training should stop, or None."""
+        self.ema_loss = self._ema(self.ema_loss, total_loss)
+
+        if self.discrepancy is not None:
+            self.ema_data_loss = self._ema(self.ema_data_loss, data_loss)
+            if iteration > self.cfg.densify.densify_from and self.ema_data_loss <= self.discrepancy:
+                return f"Stopped at iteration {iteration}: the data residual reached the noise level"
+
+        if iteration > self.cfg.densify.densify_until:
+            # Relative improvement, so that the criterion does not depend on how small the loss is
+            if self.ema_loss < self.best_ema_loss * (1 - self.cfg.train.early_stopping_min_delta):
+                self.best_ema_loss = self.ema_loss
+                self.patience_counter = 0  # Reset patience if we hit a new best
+            else:
+                self.patience_counter += 1 # Increment if it stalled or got worse
+
+            if self.patience_counter >= self.cfg.train.early_stopping_patience:
+                return f"Early stopping triggered at iteration {iteration} (EMA Loss stalled at {self.ema_loss:.5f})"
+
+        return None
+
+
 class Trainer:
-    def __init__(self, model: GasSplattingModel, cfg: Config, environment: EnvironmentContext | None = None, max_buffer_size: int | None = None):
+    def __init__(self, model: GasSplattingModel, cfg: Config, environment: EnvironmentContext | None = None):
         self.model = model
         self.ground_truth = environment.ground_truth.gas_map if environment and environment.ground_truth else None
         # Evaluation only looks at free cells, where gas can actually be
@@ -60,70 +104,31 @@ class Trainer:
         # so it does not have to run a second forward pass over the whole buffer.
         self.last_prediction: torch.Tensor | None = None
 
-        # --- Distance fields used by the obstacle penalty L_obs ---
-        # ESDF D, its gradient, and the axis-aligned SDF (D_x, D_y), all in meters
-        self.esdf_tensor = None
-        self.esdf_grad_tensor = None
-        self.aasdf_tensor = None
-
-        if environment and environment.obstacles is not None:
-            esdf = compute_esdf(environment.obstacles, cell_size=cfg.env.cell_size)
-            dev = self.cfg.device
-
-            # (1, 1, H, W)
-            self.esdf_tensor = torch.tensor(esdf, dtype=torch.float32, device=dev).unsqueeze(0).unsqueeze(0)
-
-            # (1, 2, H, W)
-            self.esdf_grad_tensor = torch.tensor(
-                compute_esdf_gradient(esdf), dtype=torch.float32, device=dev
-            ).unsqueeze(0)
-
-            # (1, 2, H, W): D_x and D_y
-            self.aasdf_tensor = torch.tensor(
-                compute_aasdf(
-                    environment.obstacles,
-                    cell_size=cfg.env.cell_size,
-                    max_dist=float(max(cfg.env.map_size)),
-                ),
-                dtype=torch.float32, device=dev
-            ).unsqueeze(0)
-        # -------------------------------------------------------------------
+        # Distance fields used by the obstacle penalty L_obs, None without an obstacle map
+        self.distance_fields = DistanceFields.from_environment(environment, cfg)
         
         # Data Buffers
-        self.max_buffer_size = max_buffer_size or float('inf')
         dev = self.cfg.device
         self.buffer_beams = torch.empty((0, 2, 2), device=dev)
         self.buffer_measurements = torch.empty((0,), device=dev)
         self.buffer_weights = torch.empty((0,), device=dev)
 
+        # Initial learning rate of every parameter group
+        initial_lrs = {
+            'pos': cfg.train.pos_lr,
+            'scale': cfg.train.scale_lr,
+            'rotation': cfg.train.rotation_lr,
+            'concentration': cfg.train.concentration_lr,
+        }
         self.optimizer: torch.optim.Optimizer = torch.optim.Adam([
-            {'params': [model._pos], 'lr': self.cfg.train.pos_lr, 'name': 'pos'},
-            {'params': [model._scale], 'lr': self.cfg.train.scale_lr, 'name': 'scale'},
-            {'params': [model._rotation], 'lr': self.cfg.train.rotation_lr, 'name': 'rotation'},
-            {'params': [model._concentration], 'lr': self.cfg.train.concentration_lr, 'name': 'concentration'},
+            {'params': [getattr(model, f'_{name}')], 'lr': lr, 'name': name} for name, lr in initial_lrs.items()
         ])
 
-        # Setup Learning Rates Schedulers
-        self.pos_lr_func = get_exp_lr_func(
-            lr_init=cfg.train.pos_lr,
-            lr_final=0.1*cfg.train.pos_lr,
-            max_steps=cfg.train.iterations
-        )
-        self.scale_lr_func = get_exp_lr_func(
-            lr_init=cfg.train.scale_lr,
-            lr_final=0.1*cfg.train.scale_lr,
-            max_steps=cfg.train.iterations
-        )
-        self.rotation_lr_func = get_exp_lr_func(
-            lr_init=cfg.train.rotation_lr,
-            lr_final=0.1*cfg.train.rotation_lr,
-            max_steps=cfg.train.iterations
-        )
-        self.concentration_lr_func = get_exp_lr_func(
-            lr_init=cfg.train.concentration_lr,
-            lr_final=0.1*cfg.train.concentration_lr,
-            max_steps=cfg.train.iterations
-        )
+        # Every learning rate decays exponentially to a tenth of its initial value
+        self.lr_funcs = {
+            name: get_exp_lr_func(lr_init=lr, lr_final=0.1*lr, max_steps=cfg.train.iterations)
+            for name, lr in initial_lrs.items()
+        }
 
     def is_densify_it(self, iteration: int):
         return (iteration > self.cfg.densify.densify_from and 
@@ -132,14 +137,7 @@ class Trainer:
     
     def update_learning_rates(self, iteration: int):
         for param_group in self.optimizer.param_groups:
-            if param_group["name"] == "pos":
-                param_group["lr"] = self.pos_lr_func(iteration)
-            elif param_group["name"] == "scale":
-                param_group["lr"] = self.scale_lr_func(iteration)
-            elif param_group["name"] == "rotation":
-                param_group["lr"] = self.rotation_lr_func(iteration)
-            elif param_group["name"] == "concentration":
-                param_group["lr"] = self.concentration_lr_func(iteration)
+            param_group["lr"] = self.lr_funcs[param_group["name"]](iteration)
 
     def update_buffers(self, batch_data: MeasurementBatch):
         """Merges new incoming data into the training buffers"""
@@ -151,14 +149,9 @@ class Trainer:
         self.buffer_measurements = torch.cat([self.buffer_measurements, batch_data.measurements], dim=0)
         self.buffer_weights = torch.cat([self.buffer_weights, new_weights], dim=0)
 
-        # Truncate buffers for memory safety
-        if self.buffer_measurements.shape[0] > self.max_buffer_size:
-            self.buffer_beams = self.buffer_beams[-self.max_buffer_size:]
-            self.buffer_measurements = self.buffer_measurements[-self.max_buffer_size:]
-            self.buffer_weights = self.buffer_weights[-self.max_buffer_size:]
-
-    def optimization_step(self, iteration: int):
-        """Executes a single optimization step (Forward + Backward + Step)."""
+    def optimization_step(self, iteration: int) -> tuple[float, float]:
+        """Executes a single optimization step (Forward + Backward + Step).
+        Returns the total loss and the data loss alone."""
         self.optimizer.zero_grad()
         
         y_pred = self.model(self.buffer_beams)
@@ -174,67 +167,12 @@ class Trainer:
         data_loss.backward()
         self.model.update_accum_gradient(self.buffer_beams)
 
-        total_loss = data_loss.item()
-        self.last_data_loss = total_loss
+        data_value = data_loss.item()
+        total_loss = data_value
 
-        # --- Obstacle penalty L_obs (ESDF and AA-SDF terms, complementary) ---
-        use_obstacles = (self.esdf_tensor is not None
-                         and self.esdf_grad_tensor is not None
-                         and self.aasdf_tensor is not None
-                         and self.cfg.train.obstacle_lambda > 0.0)
-
-        if use_obstacles:
-            pos = self.model.get_pos()                      # (K, 2)
-            Sigma = self.model.get_covariance()             # (K, 2, 2)
-            concentrations = self.model.get_concentration() # (K,)
-
-            # Normalize positions to [-1, 1] for grid sampling
-            map_w, map_h = self.model.map_size[0], self.model.map_size[1]
-            norm_x = (pos[:, 0] / map_w) * 2.0 - 1.0
-            norm_y = (pos[:, 1] / map_h) * 2.0 - 1.0
-            grid = torch.stack([norm_x, norm_y], dim=-1).view(1, 1, -1, 2) # (1, 1, K, 2)
-
-            # --- ESDF term ---
-            # D(mu_k): (1, 1, 1, K) -> (K,)
-            esdf_at_mu = F.grid_sample(
-                self.esdf_tensor, grid,
-                mode='bilinear', padding_mode='border', align_corners=False
-            ).view(-1)
-
-            # grad D(mu_k): (1, 2, 1, K) -> (K, 2)
-            esdf_grad_at_mu = F.grid_sample(
-                self.esdf_grad_tensor, grid,
-                mode='bilinear', padding_mode='border', align_corners=False
-            ).squeeze(0).squeeze(1).transpose(0, 1)
-
-            # Unit normal n_k pointing away from the nearest surface
-            n = F.normalize(esdf_grad_at_mu, p=2, dim=-1, eps=1e-6) # (K, 2)
-
-            # Variance along the normal, n^T Sigma n: (K, 1, 2) @ (K, 2, 2) @ (K, 2, 1) -> (K,)
-            normal_variance = torch.bmm(
-                n.unsqueeze(1), torch.bmm(Sigma, n.unsqueeze(-1))
-            ).view(-1)
-            sigma_n = torch.sqrt(torch.clamp(normal_variance, min=1e-7))
-
-            esdf_violation = F.relu(self.cfg.train.obstacle_sigma_k * sigma_n - esdf_at_mu)
-
-            # --- AA-SDF term ---
-            # (D_x(mu_k), D_y(mu_k)): (1, 2, 1, K) -> (K, 2)
-            aasdf_at_mu = F.grid_sample(
-                self.aasdf_tensor, grid,
-                mode='bilinear', padding_mode='border', align_corners=False
-            ).squeeze(0).squeeze(1).transpose(0, 1)
-
-            # Along the coordinate axes the variance reduces to the diagonal of Sigma: (K, 2)
-            sigma_axis = torch.sqrt(torch.clamp(torch.diagonal(Sigma, dim1=1, dim2=2), min=1e-7))
-
-            aasdf_violation = F.relu(self.cfg.train.obstacle_sigma_k * sigma_axis - aasdf_at_mu)
-
-            # Weight by sg(rho_k): keeps the penalty commensurate with the data
-            # term, and stops fading a Gaussian out from dodging it.
-            obstacle_loss = self.cfg.train.obstacle_lambda * torch.sum(
-                (esdf_violation + aasdf_violation.sum(dim=-1)) * concentrations.detach()
-            ) / scale
+        # --- Obstacle penalty L_obs ---
+        if self.distance_fields is not None and self.cfg.train.obstacle_lambda > 0.0:
+            obstacle_loss = obstacle_penalty(self.model, self.distance_fields, self.cfg)
 
             # Backward separately so it never affects the densification accumulator
             obstacle_loss.backward()
@@ -245,7 +183,7 @@ class Trainer:
         self.optimizer.step()
         self.model.project_positions()
 
-        return total_loss
+        return total_loss, data_value
 
     def inject_gaussians(self) -> int:
         """Injects new Gaussians into the regions the current model does not cover."""
@@ -297,24 +235,43 @@ class Trainer:
         if not self.cfg.quiet and current is not None:
             tqdm.write(f"Concentration scale raised from {current:.4g} to {batch_scale:.4g} ppm")
 
+    def noise_discrepancy(self) -> float | None:
+        """Data loss at which the residual is as large as the noise, None without a known noise level.
+
+        Discrepancy principle: with a known noise level, stop once the data residual is as large as the
+        noise, since fitting further fits the noise. A reading y with an error of std sigma*y has an
+        expected absolute error of sqrt(2/pi)*sigma*y, so the data loss (mean absolute residual over
+        the concentration scale) reaches the noise at this level.
+        """
+        if not self.cfg.train.noise_level:
+            return None
+        return (math.sqrt(2 / math.pi) * self.cfg.train.noise_level
+                * float(self.buffer_measurements.abs().mean()) / float(self.model.scale))
+
+    def _densify(self):
+        """Splits and prunes the Gaussians, then injects new ones where the model falls short."""
+        with torch.no_grad():
+            stats = self.model.densify_and_prune(self.optimizer)
+            stats['injections'] = self.inject_gaussians()
+
+        self.results.densify_history[self.global_iteration] = stats
+
+    def _evaluate(self) -> float:
+        """RMSE of the current map against the ground truth, over the free cells."""
+        current_map = self.model.render_map(cell_size=self.cfg.env.cell_size)
+        error = current_map - self.ground_truth
+        if self.eval_mask is not None:
+            error = error[self.eval_mask]
+        return float(np.sqrt(np.mean(error**2)))
+
     def train(self, batch_data: MeasurementBatch) -> BatchResults:
         self.update_concentration_scale(batch_data)
         self.update_buffers(batch_data)
 
-        # Early stopping init
-        ema_loss = None
-        best_ema_loss = float('inf')
-        patience_counter = 0
-        # Discrepancy principle: with a known noise level, stop once the data residual is as large as the
-        # noise, since fitting further fits the noise. A reading y with an error of std sigma*y has an
-        # expected absolute error of sqrt(2/pi)*sigma*y, so the data loss (mean absolute residual over
-        # the concentration scale) reaches the noise at this level
-        ema_data_loss, discrepancy = None, None
-        if self.cfg.train.noise_level:
-            discrepancy = (math.sqrt(2 / math.pi) * self.cfg.train.noise_level
-                           * float(self.buffer_measurements.abs().mean()) / float(self.model.scale))
+        early_stopping = EarlyStopping(self.cfg, discrepancy=self.noise_discrepancy())
 
-        # Training timer
+        # Training timer: optimization, early stopping and densification. Visualization
+        # and evaluation are left out
         batch_time = 0.0
 
         current_loss = 0.0
@@ -322,54 +279,22 @@ class Trainer:
         for iteration in pbar:
             t_start = time.time()
             
-            current_loss = self.optimization_step(iteration)
+            current_loss, data_loss = self.optimization_step(iteration)
             self.results.loss_history.append(current_loss)
 
-            # --- Early stopping ---
-            # Update the smoothed EMA loss
-            if ema_loss is None:
-                ema_loss = current_loss
-            else:
-                ema_loss = (self.cfg.train.ema_alpha * current_loss) + ((1 - self.cfg.train.ema_alpha) * ema_loss)
+            stop_reason = early_stopping.update(current_loss, data_loss, iteration)
 
-            if discrepancy is not None:
-                a = self.cfg.train.ema_alpha
-                ema_data_loss = (self.last_data_loss if ema_data_loss is None
-                                 else a * self.last_data_loss + (1 - a) * ema_data_loss)
-                if iteration > self.cfg.densify.densify_from and ema_data_loss <= discrepancy:
-                    batch_time += (time.time() - t_start)
-                    if not self.cfg.quiet:
-                        tqdm.write(f"Stopped at iteration {iteration}: the data residual reached the noise level")
-                    break
-
-            if iteration > self.cfg.densify.densify_until:
-                # Check for significant improvement
-                # Relative improvement, so that the criterion does not depend on how small the loss is
-                if ema_loss < best_ema_loss * (1 - self.cfg.train.early_stopping_min_delta):
-                    best_ema_loss = ema_loss
-                    patience_counter = 0  # Reset patience if we hit a new best
-                else:
-                    patience_counter += 1 # Increment if it stalled or got worse
-                    
-                # Halt if patience runs out
-                if patience_counter >= self.cfg.train.early_stopping_patience:
-                    batch_time += (time.time() - t_start) # Add iteration time before breaking
-                    if not self.cfg.quiet:
-                        tqdm.write(f"Early stopping triggered at iteration {iteration} (EMA Loss stalled at {ema_loss:.5f})")
-                    break 
-            # ----------------------------
-
-            # --- Densification ---
-            is_densifying = self.is_densify_it(iteration)
+            # The iteration that stops training does not densify
+            is_densifying = stop_reason is None and self.is_densify_it(iteration)
             if is_densifying:
-                with torch.no_grad():
-                    stats = self.model.densify_and_prune(self.optimizer)
-                    stats['injections'] = self.inject_gaussians()
-
-                self.results.densify_history[self.global_iteration] = stats
-            # -------------------------
+                self._densify()
 
             batch_time += (time.time() - t_start)
+
+            if stop_reason is not None:
+                if not self.cfg.quiet:
+                    tqdm.write(stop_reason)
+                break
 
             if iteration % 100 == 0:
                 pbar.set_postfix({'loss': f'{current_loss:.5f}', 'gaussians': self.model.num_gaussians})
@@ -385,12 +310,7 @@ class Trainer:
             
             # --- Model evaluation (needs a ground truth) ---
             if self.cfg.train.do_eval and self.ground_truth is not None and iteration % self.cfg.train.eval_interval == 0:
-                current_map = self.model.render_map(cell_size=self.cfg.env.cell_size)
-                error = current_map - self.ground_truth
-                if self.eval_mask is not None:
-                    error = error[self.eval_mask]
-                rmse = float(np.sqrt(np.mean(error**2)))
-                self.results.rmse_history[self.global_iteration] = rmse
+                self.results.rmse_history[self.global_iteration] = self._evaluate()
             # ----------------------------
 
             self.global_iteration += 1
@@ -404,7 +324,8 @@ class Trainer:
     def finish(self, gif_path: str = "plots/training.gif") -> TrainingResults:
         """Handles post-training cleanup and returns the global training history."""
         if self.visualizer:
-            os.makedirs("plots", exist_ok=True)
+            if os.path.dirname(gif_path):
+                os.makedirs(os.path.dirname(gif_path), exist_ok=True)
             self.visualizer.save_gif(gif_path)
 
         del self.buffer_beams
