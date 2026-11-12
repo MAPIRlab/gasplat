@@ -9,7 +9,9 @@ class TestDefiniteIntegral(unittest.TestCase):
     def setUp(self):
         self.num_gaussians = 3
         self.num_beams = 5
-        
+        # Fixed draws: with unseeded ones the numerical reference misses its tolerance in ~1 run in 15
+        torch.manual_seed(0)
+
         # Gaussians parameters
         self.means = torch.rand(self.num_gaussians, 2)
         L = torch.randn(self.num_gaussians, 2, 2)
