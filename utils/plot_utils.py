@@ -11,27 +11,6 @@ from utils.sim_utils import EnvironmentContext, MeasurementBatch
 from utils.init_utils import InitializationData
 from utils.paths import PLOTS_DIR
 
-def set_publication_style():
-    """Configures Matplotlib global style"""
-    plt.rcParams.update({
-        'font.family': 'sans-serif',
-        'font.size': 14,
-        'axes.titlesize': 16,
-        'axes.labelsize': 14,
-        'xtick.labelsize': 12,
-        'ytick.labelsize': 12,
-        'legend.fontsize': 12,
-        'figure.titlesize': 18,
-        'lines.linewidth': 2.0,
-        'lines.markersize': 6,
-        'grid.alpha': 0.7,
-        'grid.linestyle': '--',
-        # --- Saving configuration ---
-        'savefig.bbox': 'tight',
-        'savefig.dpi': 300,
-        'savefig.pad_inches': 0.05
-    })
-
 def plot_initial_guess(img_gt: np.ndarray | None, init_data: InitializationData, cfg: Config):
     """Shows ground truth (if available) and initial reconstruction seeds, and saves it."""
 

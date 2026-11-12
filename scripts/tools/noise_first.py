@@ -32,7 +32,7 @@ from utils.paths import PLOTS_DIR
 from utils.metrics import gas_map_metrics
 from utils.init_utils import setup_gs_model
 from utils.scenario_sets import scenario_dirs
-from utils.plot_utils import set_publication_style
+from utils.figure_style import apply_plot_style
 from utils.experiment_utils import batch_config
 from utils.sim_utils import MeasurementBatch, generate_simulation_data
 
@@ -78,7 +78,7 @@ def main():
     cfg: Config = batch_config(args.cfg)
     if not cfg.sim.scenario:
         cfg.sim.scenario = scenario_dirs("tuning")[0]
-    set_publication_style()
+    apply_plot_style()
 
     batch, environment = generate_simulation_data(cfg)
     with open(os.path.join(cfg.sim.scenario, "meta.json")) as f:

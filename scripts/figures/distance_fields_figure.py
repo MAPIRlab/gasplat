@@ -16,7 +16,6 @@ distances take the end color.
 """
 import os
 import sys
-import shutil
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
@@ -26,23 +25,13 @@ from matplotlib.colors import ListedColormap, Normalize
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from utils.obstacle_utils import create_obstacle_scenario, compute_esdf, compute_esdf_gradient, compute_aasdf
+from utils.figure_style import WALL_DARK, apply_paper_style, save_figure
 
-# STIX, as in the other figures of the paper
-plt.rcParams.update({
-    "font.family": "STIXGeneral",
-    "mathtext.fontset": "stix",
-    "axes.formatter.use_mathtext": True,
-    "axes.unicode_minus": False,
-    "font.size": 8.5,
-    "axes.titlesize": 9,
-    "xtick.labelsize": 8,
-    "ytick.labelsize": 8,
-})
+apply_paper_style("drawing", xtick_labelsize=8, ytick_labelsize=8)
 
 MAP = 10.0          # side of the square map (m)
 CELL = 0.1          # cell size (m)
 ARROW_STEP = 7      # one gradient arrow every this many cells, in free space
-C_WALL = "#4a4a4a"
 C_NONE = "0.82"     # AA-SDF cells with no obstacle along the axis
 LIMIT = 3.0         # color scale [-LIMIT, LIMIT] m: farther than a few primitive widths, distances no longer matter
 
@@ -90,7 +79,7 @@ def main():
 
     fig, axes = plt.subplots(1, 4, figsize=(7.16, 2.05), constrained_layout=True)
     # (a) occupancy grid
-    axes[0].imshow(obstacles, origin="lower", extent=extent, cmap=ListedColormap(["white", C_WALL]),
+    axes[0].imshow(obstacles, origin="lower", extent=extent, cmap=ListedColormap(["white", WALL_DARK]),
                    interpolation="nearest")
     axes[0].add_collection(boundary(obstacles, CELL))
     frame(axes[0], "(a) Occupancy grid")
@@ -121,15 +110,9 @@ def main():
     cbar = fig.colorbar(im, ax=axes[1:], fraction=0.03, pad=0.02, extend=extend)
     cbar.set_label("Signed distance (m)")
 
-    os.makedirs("plots", exist_ok=True)
-    for ext in ("pdf", "png"):
-        fig.savefig(f"plots/distance_fields.{ext}", dpi=300, bbox_inches="tight")
-    if args.copy_to:
-        os.makedirs(os.path.expanduser(args.copy_to), exist_ok=True)
-        shutil.copy("plots/distance_fields.pdf", os.path.expanduser(args.copy_to))
+    save_figure(fig, "distance_fields", copy_to=args.copy_to)
     print(f"color range [{vmin:.2f}, {vmax:.2f}] m; saturated AA-SDF cells: "
           f"{100 * saturated[0].mean():.0f}% of D_x, {100 * saturated[1].mean():.0f}% of D_y")
-    print("Saved plots/distance_fields.{pdf,png}")
 
 
 if __name__ == "__main__":

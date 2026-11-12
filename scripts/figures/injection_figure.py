@@ -9,9 +9,12 @@ all, where the data gradient vanishes and the optimizer has nothing to act upon.
 Every panel is produced by the real pipeline: the model is trained with Trainer,
 the measurements come from the same ray-cell integration used in the experiments,
 and the stages drawn below are checked against extract_candidate_positions.
+
+    python scripts/figures/injection_figure.py [--copy_to ~/paper/figs]
 """
 import os
 import sys
+import argparse
 
 import torch
 import numpy as np
@@ -30,16 +33,9 @@ from utils.init_utils import setup_gs_model
 from utils.densification_utils import extract_candidate_positions
 from utils.obstacle_utils import add_rectangle, obstacle_mask_to_geometry
 from utils.sim_utils import MeasurementBatch, EnvironmentContext, GroundTruth, simulate_gas_integrals
+from utils.figure_style import GAS_CMAP_YELLOW, WALL_DARK, PRIMITIVE_GREY, apply_paper_style, save_figure
 
-# STIX (Times-like), shipped with matplotlib: heavier strokes than Computer Modern at the printed size
-plt.rcParams.update({
-    "font.family": "STIXGeneral",
-    "mathtext.fontset": "stix",
-    "axes.formatter.use_mathtext": True,
-    "axes.unicode_minus": False,
-    "font.size": 8.5,
-    "axes.titlesize": 9,
-})
+apply_paper_style("drawing")
 
 MAP_SIZE = (12.0, 7.0)
 CELL = 0.25
@@ -48,10 +44,8 @@ CELL = 0.25
 PLUME_SEEN = ((3.0, 3.6), 1.10, 1.0)
 PLUME_NEW = ((8.9, 4.9), 0.95, 1.2)
 
-GAS_CMAP = LinearSegmentedColormap.from_list(
-    "gas", [(1, 1, 1, 0), (1, 0.96, 0.35, 1), (0.93, 0.85, 0.10, 1)])
 RES_CMAP = plt.get_cmap("OrRd")
-C_MODEL = "#7a7a7a"      # primitives the model already holds
+C_MODEL = PRIMITIVE_GREY   # primitives the model already holds
 C_CAND = "#c51b1b"       # beams selected as candidates
 C_NEW = "#2166ac"        # everything the injection produces
 C_OFF = "#d9d9d9"        # beams taking no part in the step
@@ -209,10 +203,10 @@ def exclusion_zone(ax, existing_pos, min_dist):
 
 def base(ax, gas, obstacles, title, emitters=()):
     map_w, map_h = MAP_SIZE
-    ax.imshow(gas, extent=(0, map_w, 0, map_h), origin="lower", cmap=GAS_CMAP,
+    ax.imshow(gas, extent=(0, map_w, 0, map_h), origin="lower", cmap=GAS_CMAP_YELLOW,
               vmin=0, vmax=1.2, interpolation="bilinear", zorder=1)
     ax.imshow(np.ma.masked_where(obstacles < 0.5, obstacles), extent=(0, map_w, 0, map_h),
-              origin="lower", cmap=LinearSegmentedColormap.from_list("w", ["#4a4a4a", "#4a4a4a"]),
+              origin="lower", cmap=LinearSegmentedColormap.from_list("w", [WALL_DARK, WALL_DARK]),
               interpolation="nearest", zorder=5)
     ax.plot([0, map_w, map_w, 0, 0], [0, 0, map_h, map_h, 0], color="k", lw=0.8, zorder=6)
     for e in emitters:
@@ -225,6 +219,10 @@ def base(ax, gas, obstacles, title, emitters=()):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Figure of the Gaussian injection mechanism")
+    parser.add_argument("--copy_to", default=None, help="Also copy the PDF here (e.g. the paper's figs folder)")
+    args = parser.parse_args()
+
     device = torch.device("cpu")
     torch.manual_seed(0)
     np.random.seed(0)
@@ -342,9 +340,7 @@ def main():
     ], loc="outside lower center", ncol=6, frameon=False, handlelength=1.3,
         handletextpad=0.5, columnspacing=1.3, fontsize=8.5)
 
-    os.makedirs("plots", exist_ok=True)
-    fig.savefig("plots/injection_steps.pdf", bbox_inches="tight")
-    fig.savefig("plots/injection_steps.png", dpi=300, bbox_inches="tight")
+    save_figure(fig, "injection_steps", dpi={"png": 300}, copy_to=args.copy_to)
 
     print(f"primitives after the first room : {model.num_gaussians}")
     print(f"beams in buffer                 : {len(beams_np)} ({n_first} + {len(beams_np) - n_first})")
@@ -356,7 +352,6 @@ def main():
     print(f"  distance to nearest primitive : min {d_near.min():.2f} m, median "
           f"{d_near.median():.2f} m (filter at {min_dist:.2f} m)")
     print(f"injected after NMS              : {len(kept)}")
-    print("Saved plots/injection_steps.{pdf,png}")
 
 
 if __name__ == "__main__":

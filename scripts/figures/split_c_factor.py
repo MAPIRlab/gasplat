@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from utils.plot_utils import set_publication_style
+from utils.figure_style import apply_plot_style
 
 def render_single_gaussian(grid_pos, mu, cov, concentration):
     """Renders a 2D Gaussian given its properties."""
@@ -74,7 +74,7 @@ def main():
     print(f"\nSaving results for the Long-Axis Split experiment. Sampled 'c' values: {c_to_save}...")
     
     # Configure Matplotlib for LaTeX-style publication
-    set_publication_style()
+    apply_plot_style()
 
     # Slightly reduced figure size so relative font size appears larger when scaled in LaTeX
     fig = plt.figure(figsize=(10, 6))

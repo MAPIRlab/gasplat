@@ -42,7 +42,7 @@ from methods.registry import AVAILABLE_METHODS
 from utils.paths import PLOTS_DIR
 from utils.cli import add_methods_argument, add_workers_argument, reject_options
 from utils.scenario_sets import add_case_arguments, cases_label, get_cases
-from utils.plot_utils import set_publication_style
+from utils.figure_style import apply_plot_style
 from utils.experiment_utils import (batch_config, measurements_at, run_methods, save_experiment_results, total_time,
                                     yield_runs)
 
@@ -69,7 +69,7 @@ def main():
     args = parser.parse_args()
     reject_options(parser, {"sim.seed": "set by --runs (GADEN scenarios) or --seeds (procedural maps)"})
     cfg: Config = batch_config(args.cfg)
-    set_publication_style()
+    apply_plot_style()
 
     cases = get_cases(args.set, args.seeds, cfg.sim.scenario, iteration=args.iteration)
     procedural = cases[0].scenario is None

@@ -11,7 +11,7 @@ from config import Config
 from trainer import Trainer
 from utils.sim_utils import generate_simulation_data
 from utils.init_utils import setup_gs_model
-from utils.plot_utils import set_publication_style
+from utils.figure_style import apply_plot_style
 
 def rmse_loss(img_gt, img_pred):
     return np.sqrt(np.mean((img_pred - img_gt)**2))
@@ -58,7 +58,7 @@ def main():
     print("\nGenerating detailed comparison plot...")
     
     # --- Plotting ---
-    set_publication_style()
+    apply_plot_style()
     
     map_w, map_h = base_cfg.env.map_size
     extent = (0, map_w, 0, map_h)

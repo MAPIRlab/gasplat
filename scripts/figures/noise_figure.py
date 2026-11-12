@@ -7,12 +7,14 @@ deviation.
 
     python scripts/figures/noise_figure.py results/noise_sensitivity_<case>_<date>.json \\
         --output plots/noise_sensitivity [--copy_to ~/paper/figs]
-    python scripts/figures/noise_figure.py RESULTS --nrmse_only --noise_aware_only --output plots/noise_sensitivity_paper
+    python scripts/figures/noise_figure.py RESULTS --nrmse_only --noise_aware_only \\
+        --output plots/noise_sensitivity_paper [--copy_to ~/paper/figs]
+
+The copy of the PDF is named noise_sensitivity.pdf, the name of the paper's figure (--copy_name).
 """
 import os
 import sys
 import json
-import shutil
 import argparse
 import numpy as np
 import matplotlib
@@ -20,23 +22,19 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from methods.registry import AVAILABLE_METHODS
+from utils.figure_style import METHOD_ORDER, METHOD_LABEL, apply_paper_style, line_style, save_figure
 
-plt.rcParams.update({
-    "font.family": "STIXGeneral", "mathtext.fontset": "stix", "axes.formatter.use_mathtext": True,
-    "axes.unicode_minus": False, "font.size": 9, "axes.titlesize": 9.5, "axes.labelsize": 9,
-    "legend.fontsize": 9, "xtick.labelsize": 8.5, "ytick.labelsize": 8.5,
-})
-ORDER = ["SART", "RBF Coupled SART", "LFD", "LTD", "Gas Splatting"]
-NAMES = {"Gas Splatting": "GASPLAT", "RBF Coupled SART": "RBF-SART",
-         "Gas Splatting (discrepancy)": "GASPLAT, noise-aware stop"}
+apply_paper_style()
+
+NAMES = {**METHOD_LABEL, "Gas Splatting (discrepancy)": "GASPLAT, noise-aware stop"}
 
 
 def main():
     parser = argparse.ArgumentParser(description="Figure of the noise experiment")
     parser.add_argument("results", nargs="+", help="Results of noise_sensitivity.py (JSON); later files add methods")
     parser.add_argument("--output", default="plots/noise_sensitivity", help="Output path without extension")
-    parser.add_argument("--copy_to", default=None, help="Also copy the PDF here")
+    parser.add_argument("--copy_to", default=None, help="Also copy the PDF here (e.g. the paper's figs folder)")
+    parser.add_argument("--copy_name", default="noise_sensitivity.pdf", help="Name of the copied PDF")
     parser.add_argument("--nrmse_only", action="store_true", help="Only the NRMSE row, at the width of a column")
     parser.add_argument("--noise_aware_only", action="store_true",
                         help="Show GASPLAT only with its noise-aware stop, labelled GASPLAT (the method of the paper)")
@@ -49,7 +47,8 @@ def main():
         runs += data["results"]["runs"]
     poses = sorted({r["poses"] for r in runs})
     levels = sorted({r["noise_level"] for r in runs})
-    methods = [m for m in ORDER if m in runs[0]["metrics"]] + [m for m in runs[0]["metrics"] if m not in ORDER]
+    methods = ([m for m in METHOD_ORDER if m in runs[0]["metrics"]] +
+               [m for m in runs[0]["metrics"] if m not in METHOD_ORDER])
     if args.noise_aware_only and "Gas Splatting (discrepancy)" in methods:
         # The noise-aware stop is part of the method: its runs replace the plain ones, under the name GASPLAT
         for r in runs:
@@ -68,11 +67,9 @@ def main():
                 vals = np.array([[factor * r["metrics"][m][key] for r in runs
                                   if r["poses"] == p and r["noise_level"] == lv and m in r["metrics"]] for lv in levels])
                 mean, std = vals.mean(1), vals.std(1)
-                style = AVAILABLE_METHODS.get(m, AVAILABLE_METHODS["Gas Splatting"])["style"]
-                gs = m.startswith("Gas Splatting")
-                ax.plot(levels, mean, color=style["color"], marker=style["marker"], lw=1.8 if gs else 1.1,
-                        ms=7 if gs else 4.5, ls="--" if gs and m != "Gas Splatting" else "-",
-                        mfc="white" if gs and m != "Gas Splatting" else style["color"], label=NAMES.get(m, m))
+                style = {**line_style(m), "label": NAMES.get(m, m)}
+                variant = m.startswith("Gas Splatting") and m != "Gas Splatting"   # dashed, open markers
+                ax.plot(levels, mean, ls="--" if variant else "-", mfc="white" if variant else style["color"], **style)
                 ax.fill_between(levels, np.maximum(mean - std, 0), mean + std, color=style["color"], alpha=0.15, lw=0)
             if key == "peak_ratio":
                 ax.axhline(1, color="0.4", lw=0.8, ls=":")
@@ -100,12 +97,7 @@ def main():
     else:
         fig.legend(handles, labels, loc="upper center", ncol=len(labels), frameon=False, bbox_to_anchor=(0.5, 1.03))
         fig.tight_layout(rect=(0, 0, 1, 0.95))
-    os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
-    for ext in ("pdf", "png"):
-        fig.savefig(f"{args.output}.{ext}", dpi=300, bbox_inches="tight")
-    if args.copy_to:
-        shutil.copy(f"{args.output}.pdf", os.path.expanduser(args.copy_to))
-    print(f"Saved {args.output}.{{pdf,png}}")
+    save_figure(fig, args.output, copy_to=args.copy_to, copy_name=args.copy_name)
 
 
 if __name__ == "__main__":

@@ -22,36 +22,34 @@ ablation; the examples do not.
 import os
 import sys
 import json
-import shutil
+import glob
 import argparse
 from collections import defaultdict
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap, ListedColormap
+from matplotlib.colors import ListedColormap
 from matplotlib.patches import Patch
 
-ROOT = os.path.join(os.path.dirname(__file__), '..', '..')
-sys.path.append(os.path.abspath(ROOT))
-from utils.metrics import gas_map_metrics
-plt.rcParams.update({
-    "font.family": "STIXGeneral", "mathtext.fontset": "stix", "axes.formatter.use_mathtext": True,
-    "axes.unicode_minus": False, "font.size": 9, "axes.titlesize": 9.5, "axes.labelsize": 9,
-    "xtick.labelsize": 8.5, "ytick.labelsize": 8.5, "legend.fontsize": 8.5,
-    "axes.spines.top": False, "axes.spines.right": False,
-})
-METHODS = ["SART", "RBF Coupled SART", "LFD", "LTD", "Gas Splatting"]
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.append(ROOT)
+from config import Config, EnvironmentParams, SimulationParams, TrainParams, DensificationParams, config_from_dict
+from methods.registry import AVAILABLE_METHODS
+from utils.paths import RESULTS_DIR, PLOTS_DIR
+from utils.gaden_utils import DEFAULT_ROOT
+from utils.metrics import CLEAN_LEVEL, gas_map_metrics   # no true gas below CLEAN_LEVEL of the peak
+from utils.experiment_utils import total_time
+from utils.figure_style import (METHOD_ORDER, apply_paper_style, draw_gas_map, method_color, method_label,
+                                save_figure)
+
+apply_paper_style(legend_fontsize=8.5, axes_spines_top=False, axes_spines_right=False)
+
+METHODS = METHOD_ORDER
 NO_PENALTY = "Gas Splatting (no penalty)"
-LABEL = {"RBF Coupled SART": "RBF-SART", "Gas Splatting": "GASPLAT", NO_PENALTY: r"GASPLAT ($\lambda_{\mathrm{obs}}=0$)"}
-SHORT = {"SART": "SART", "RBF Coupled SART": "RBF-SART", "LFD": "LFD", "LTD": "LTD", "Gas Splatting": "GASPLAT",
-         NO_PENALTY: "GASPLAT\n" + r"($\lambda_{\mathrm{obs}}\!=\!0$)"}
-COLOR = {"SART": "tab:orange", "RBF Coupled SART": "tab:green", "LFD": "tab:red", "LTD": "tab:purple",
-         "Gas Splatting": "tab:blue", NO_PENALTY: "#6baed6"}
-GAS_CMAP = LinearSegmentedColormap.from_list(
-    "gas", [(0.0, (1, 1, 1, 1)), (0.05, (1, 0.97, 0.55, 1)), (0.5, (0.98, 0.82, 0.15, 1)), (1.0, (0.90, 0.45, 0.05, 1))])
-WALL_GREY = "0.6"
-CLEAN_LEVEL = 0.01      # as utils/experiment_utils.py: no true gas below this share of the peak
+LABEL = {m: method_label(m) for m in METHODS} | {NO_PENALTY: r"GASPLAT ($\lambda_{\mathrm{obs}}=0$)"}
+SHORT = LABEL | {NO_PENALTY: "GASPLAT\n" + r"($\lambda_{\mathrm{obs}}\!=\!0$)"}   # bar labels
+COLOR = {m: method_color(m) for m in METHODS} | {NO_PENALTY: "#6baed6"}
 MIN_AREA = 0.01         # as scripts/experiments/random_poses.py
 CROP_LEVEL, CROP_PAD = 0.02, 0.5
 # Regions of the free space: covered, single direction, unobserved without gas (false gas), with gas (missing)
@@ -116,7 +114,7 @@ def bars(ax, by_house, methods, fn, region=None, log=False, ref=None):
     ax.grid(axis="y", **GRID)
 
 
-def errors_figure(by_house, methods, out):
+def errors_figure(by_house, methods, out, copy_to=None):
     panels = [("(a) All free space", lambda x: 100 * x["nrmse"], None),
               ("(b) 2+ directions", lambda x: 100 * x["nrmse_covered"], "covered"),
               ("(c) Single direction", lambda x: 100 * x["nrmse_single"], "single"),
@@ -128,20 +126,20 @@ def errors_figure(by_house, methods, out):
         ax.set_title(title, pad=4, fontsize=8.5)
     axes[0].set_ylabel("NRMSE (%)")
     fig.tight_layout(w_pad=0.6)
-    save(fig, out)
+    save_figure(fig, out, copy_to=copy_to)
 
 
-def metrics_figure(by_house, methods, out):
+def metrics_figure(by_house, methods, out, copy_to=None):
     panels = [("(a) Peak error (%)", lambda x: 100 * abs(x["peak_ratio"] - 1), False, None),
               ("(b) Peak ratio", lambda x: x["peak_ratio"], False, 1.0),
               ("(c) Peak location error (m)", lambda x: x["peak_distance"], False, None),
-              ("(d) Time (s)", lambda x: x["time"] + (x.get("matrix_time") or 0.0), True, None)]
+              ("(d) Time (s)", total_time, True, None)]
     fig, axes = plt.subplots(1, len(panels), figsize=(7.16, 2.35))
     for ax, (title, fn, log, ref) in zip(axes, panels):
         bars(ax, by_house, methods, fn, log=log, ref=ref)
         ax.set_title(title, pad=4, fontsize=8.5)
     fig.tight_layout(w_pad=0.8)
-    save(fig, out)
+    save_figure(fig, out, copy_to=copy_to)
 
 
 def region_map(levels, gt, obstacles):
@@ -170,17 +168,28 @@ def median_run(runs, a="Gas Splatting", b="LFD"):
     return order[len(order) // 2]
 
 
-def run_maps(maps_dir, case, run):
-    """Maps of one run: saved by the experiment, or regenerated from its seed (and saved)."""
+def experiment_config(log):
+    """Configuration of the experiment that wrote the log: that of its latest summary
+    (scripts/experiments/random_poses.py saves it in metadata.config, with the log in
+    metadata.log; summaries are saved next to the log), else the default with a warning."""
+    folder = os.path.dirname(os.path.abspath(log))
+    for path in sorted(glob.glob(os.path.join(folder, "random_poses_*.json")), reverse=True):   # latest first
+        meta = json.load(open(path)).get("metadata", {})
+        if os.path.basename(meta.get("log", "")) == os.path.basename(log) and "config" in meta:
+            return config_from_dict(meta["config"])
+    print(f"Warning: no summary of {log} in {folder}, the maps are regenerated with the default configuration")
+    return Config(EnvironmentParams(), SimulationParams(), TrainParams(), DensificationParams())
+
+
+def run_maps(log, case, run):
+    """Maps of one run: saved by the experiment, or regenerated from its seed with the
+    configuration of the experiment (and saved)."""
+    maps_dir = log.replace(".jsonl", "_maps")
     path = os.path.join(maps_dir, f"{case}_run{run}.npz")
     if not os.path.exists(path):
-        sys.path.append(os.path.abspath(os.path.join(ROOT, "scripts", "experiments")))
-        sys.path.append(os.path.abspath(ROOT))
+        sys.path.append(os.path.join(ROOT, "scripts", "experiments"))
         from random_poses import run_case
-        from config import Config, EnvironmentParams, SimulationParams, TrainParams, DensificationParams
-        from methods.registry import AVAILABLE_METHODS
-        from utils.gaden_utils import DEFAULT_ROOT
-        cfg = Config(EnvironmentParams(), SimulationParams(), TrainParams(), DensificationParams())
+        cfg = experiment_config(log)
         cfg.quiet, cfg.sim.random_poses, cfg.sim.scenario, cfg.sim.seed = True, True, os.path.join(DEFAULT_ROOT, case), run
         maps = run_case(cfg, list(AVAILABLE_METHODS), keep_maps=True)["maps"]
         os.makedirs(maps_dir, exist_ok=True)
@@ -188,14 +197,13 @@ def run_maps(maps_dir, case, run):
     return np.load(path)
 
 
-def examples_figure(log, by_house, houses, run, out, shown=("LFD", "Gas Splatting")):
+def examples_figure(log, by_house, houses, run, out, shown=("LFD", "Gas Splatting"), copy_to=None):
     """run None: the median run of each house (median_run)."""
-    maps_dir = log.replace(".jsonl", "_maps")
     rows = []
     for h in houses:
         rr = run if run is not None else median_run(by_house[h])
         r = next(x for x in by_house[h] if x["run"] == rr)
-        d = run_maps(maps_dir, r["case"], rr)
+        d = run_maps(log, r["case"], rr)
         print(f"{h}: run {rr}, GASPLAT {100 * r['metrics']['Gas Splatting']['nrmse']:.2f}%, "
               f"LFD {100 * r['metrics']['LFD']['nrmse']:.2f}% in the experiment's log")
         obs = d["obstacles"] > 0.5
@@ -223,17 +231,13 @@ def examples_figure(log, by_house, houses, run, out, shown=("LFD", "Gas Splattin
         for j in range(ncol):
             ax = fig.add_subplot(grid[i, j])
             if j == 1:
-                reg = crop(x["regions"]).astype(float)
-                ax.imshow(np.where(obs, np.nan, reg), origin="lower", extent=extent, cmap=region_cmap,
-                          vmin=-0.5, vmax=3.5, interpolation="nearest")
+                img, kw = crop(x["regions"]).astype(float), dict(cmap=region_cmap, vmin=-0.5, vmax=3.5,
+                                                                 interpolation="nearest")
                 title = "Regions"
             else:
-                img = x["gt"] if j == 0 else x["d"][f"pred/{shown[j - 2]}"]
-                ax.imshow(np.where(obs, np.nan, crop(img)), origin="lower", extent=extent, cmap=GAS_CMAP, vmin=0,
-                          vmax=vmax, interpolation="bilinear")
+                img, kw = crop(x["gt"] if j == 0 else x["d"][f"pred/{shown[j - 2]}"]), dict(vmax=vmax)
                 title = f"{x['name'].capitalize()}: ground truth" if j == 0 else LABEL.get(shown[j - 2], shown[j - 2])
-            ax.imshow(np.where(obs, 1.0, np.nan), origin="lower", extent=extent, cmap=ListedColormap([WALL_GREY]),
-                      interpolation="nearest")
+            draw_gas_map(ax, img, obs, extent, title=f"({next(letters)}) {title}", fontsize=8.5, **kw)
             if j < 2:
                 ax.scatter(P[inside, 0], P[inside, 1], marker="^", s=20, c="w", edgecolors="k", linewidths=0.6,
                            zorder=3)
@@ -244,42 +248,27 @@ def examples_figure(log, by_house, houses, run, out, shown=("LFD", "Gas Splattin
                         f"false {fmt('nrmse_false')}, missing {fmt('nrmse_missing')} (NRMSE %)",
                         transform=ax.transAxes, ha="center", va="top", fontsize=7)
             ax.set_xlim(extent[0], extent[1]); ax.set_ylim(extent[2], extent[3])
-            ax.set_xticks([]); ax.set_yticks([])
-            for side in ax.spines.values():
-                side.set_visible(False)
-            ax.set_title(f"({next(letters)}) {title}", pad=3, fontsize=8.5)
     fig.legend(handles=[Patch(color=REGION_COLOR[k], label=REGION_LABEL[k]) for k in REGION_NAMES],
                loc="lower center", ncol=4, frameon=False, bbox_to_anchor=(0.5, -0.02), fontsize=8)
-    save(fig, out)
-
-
-def save(fig, out):
-    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
-    for ext in ("pdf", "png"):
-        fig.savefig(f"{out}.{ext}", dpi=300, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved {out}.{{pdf,png}}")
+    save_figure(fig, out, copy_to=copy_to)
 
 
 def main():
     ap = argparse.ArgumentParser(description="Paper figures of the comparison in the houses")
-    ap.add_argument("--log", default=os.path.join(ROOT, "results", "random_poses_all.jsonl"))
+    ap.add_argument("--log", default=os.path.join(RESULTS_DIR, "random_poses_all.jsonl"))
     ap.add_argument("--examples", nargs=2, default=["house03", "house27"])
     ap.add_argument("--run", type=int, default=None,
                     help="Run shown in the examples (default: the median run of each house, GASPLAT minus LFD)")
-    ap.add_argument("--output_dir", default=os.path.join(ROOT, "plots"))
+    ap.add_argument("--output_dir", default=PLOTS_DIR)
     ap.add_argument("--copy_to", default=None, help="Also copy the PDFs here (e.g. ~/paper/figs)")
     args = ap.parse_args()
     by_house = load(args.log)
     methods = METHODS + [NO_PENALTY]
     outs = [os.path.join(args.output_dir, n) for n in ("houses_errors", "houses_metrics", "houses_examples")]
-    errors_figure(by_house, methods, outs[0])
-    metrics_figure(by_house, methods, outs[1])
-    examples_figure(args.log, by_house, args.examples, args.run, outs[2])
+    errors_figure(by_house, methods, outs[0], args.copy_to)
+    metrics_figure(by_house, methods, outs[1], args.copy_to)
+    examples_figure(args.log, by_house, args.examples, args.run, outs[2], copy_to=args.copy_to)
     print(f"{len(by_house)} houses, runs per house: {sorted({len(v) for v in by_house.values()})}")
-    if args.copy_to:
-        for o in outs:
-            shutil.copy(f"{o}.pdf", os.path.expanduser(args.copy_to))
 
 
 if __name__ == "__main__":

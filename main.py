@@ -4,7 +4,8 @@ from simple_parsing import ArgumentParser
 from config import Config
 from trainer import Trainer
 from utils.init_utils import setup_gs_model
-from utils.plot_utils import plot_initial_guess, plot_training_results, set_publication_style
+from utils.plot_utils import plot_initial_guess, plot_training_results
+from utils.figure_style import apply_plot_style
 from utils.sim_utils import generate_simulation_data
 from utils.experiment_utils import RUN_THREADS, save_experiment_results
 
@@ -17,7 +18,7 @@ def main():
     quiet = cfg.quiet
     torch.set_num_threads(RUN_THREADS)
 
-    set_publication_style()
+    apply_plot_style()
 
     if not quiet: print(f"Using device: {cfg.device}")
 

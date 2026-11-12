@@ -35,7 +35,8 @@ from config import Config
 from utils.paths import PLOTS_DIR, RESULTS_DIR
 from utils.cli import add_workers_argument
 from utils.scenario_sets import add_case_arguments, get_cases
-from utils.plot_utils import plot_sweep, set_publication_style
+from utils.plot_utils import plot_sweep
+from utils.figure_style import apply_plot_style
 from utils.experiment_utils import batch_config, default_workers, yield_scenario_runs, save_experiment_results
 
 GROUPS = ("env", "sim", "train", "densify")
@@ -107,7 +108,7 @@ def main():
         sys.exit("--values can only be used with a single parameter")
 
     cfg: Config = batch_config(args.cfg)
-    set_publication_style()
+    apply_plot_style()
 
     cases = get_cases(args.set, args.seeds, cfg.sim.scenario, iteration=args.iteration)
     workers = args.workers or default_workers(cfg)

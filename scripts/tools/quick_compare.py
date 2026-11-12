@@ -26,7 +26,8 @@ from utils.paths import PLOTS_DIR
 from utils.cli import add_methods_argument
 from utils.scenario_sets import case_name
 from utils.sim_utils import generate_simulation_data
-from utils.plot_utils import draw_beams, set_publication_style
+from utils.plot_utils import draw_beams
+from utils.figure_style import apply_plot_style
 from utils.experiment_utils import RUN_THREADS, batch_config, run_methods, total_time
 
 
@@ -37,7 +38,7 @@ def main():
     args = parser.parse_args()
     cfg: Config = batch_config(args.cfg)
     torch.set_num_threads(RUN_THREADS)
-    set_publication_style()
+    apply_plot_style()
 
     batch, environment = generate_simulation_data(cfg)
     metrics, preds = run_methods(batch, environment, cfg, args.methods)

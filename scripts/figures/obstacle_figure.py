@@ -21,14 +21,12 @@ penalty. Sized for one column.
 import os
 import sys
 import copy
-import shutil
 import argparse
 
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
-from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.lines import Line2D
 from matplotlib.patches import Rectangle
 
@@ -39,16 +37,9 @@ from trainer import Trainer
 from utils.init_utils import setup_gs_model
 from utils.sim_utils import (MeasurementBatch, EnvironmentContext, GroundTruth, generate_vantage_beams,
                              simulate_gas_integrals)
+from utils.figure_style import GAS_CMAP_CLEAR, WALL_DARK, PRIMITIVE_GREY, apply_paper_style, save_figure
 
-# STIX, as in the other figures of the paper
-plt.rcParams.update({
-    "font.family": "STIXGeneral",
-    "mathtext.fontset": "stix",
-    "axes.formatter.use_mathtext": True,
-    "axes.unicode_minus": False,
-    "font.size": 8.5,
-    "axes.titlesize": 8.5,
-})
+apply_paper_style("drawing", axes_titlesize=8.5)
 
 COLUMN_WIDTH = 3.46                    # inches, one column of the paper (cas-dc)
 MAP_SIZE = (5.0, 6.0)
@@ -59,13 +50,7 @@ PLUME = ((3.0, 3.0), (0.8, 1.3), 1.0)  # center, (sigma_x, sigma_y), peak: highe
 POSES = np.array([[0.7, 0.7], [0.7, 5.3], [2.5, 0.7]])  # all in the first room
 ANGULAR_STEP = 6.0
 
-# The gas colors of the injection figure, extended to orange so that mid concentrations stand out
-GAS_CMAP = LinearSegmentedColormap.from_list(
-    "gas", [(0.0, (1, 1, 1, 0)), (0.05, (1, 0.97, 0.55, 1)), (0.5, (0.98, 0.82, 0.15, 1)),
-            (1.0, (0.90, 0.45, 0.05, 1))])
-C_WALL = "#4a4a4a"
 C_BEAM = "#9e9e9e"
-C_MODEL = "#7a7a7a"    # primitive centers, as in the injection figure
 
 
 def rooms():
@@ -106,10 +91,10 @@ def fit(cfg: Config, batch: MeasurementBatch, environment: EnvironmentContext, o
 def draw_base(ax, field, obstacles, vmax, title):
     """The field everywhere, walls as outlines only, so gas inside them shows."""
     map_w, map_h = MAP_SIZE
-    ax.imshow(field, extent=(0, map_w, 0, map_h), origin="lower", cmap=GAS_CMAP, vmin=0, vmax=vmax,
+    ax.imshow(field, extent=(0, map_w, 0, map_h), origin="lower", cmap=GAS_CMAP_CLEAR, vmin=0, vmax=vmax,
               interpolation="bilinear", zorder=1)
     for x0, y0, x1, y1 in [(0.0, 0.0, map_w, map_h)] + rooms():
-        ax.add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False, ec=C_WALL, lw=0.6, zorder=5))
+        ax.add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False, ec=WALL_DARK, lw=0.6, zorder=5))
     ax.text((WALL_X[1] + map_w) / 2, map_h / 2, "unobserved room", rotation=90, ha="center", va="center",
             fontsize=7.5, color="0.45", style="italic", zorder=6)
     ax.set_title(title, pad=2)
@@ -157,7 +142,7 @@ def main():
         draw_base(ax, fields[l], obstacles, vmax, title)
         with torch.no_grad():
             pos = models[l].get_pos().cpu().numpy()
-        ax.plot(pos[:, 0], pos[:, 1], ".", color=C_MODEL, ms=1.5, zorder=6)
+        ax.plot(pos[:, 0], pos[:, 1], ".", color=PRIMITIVE_GREY, ms=1.5, zorder=6)
         f = fields[l]
         stats[l] = (models[l].num_gaussians, f[room_b].sum() / f.sum(), f[room_b].max() / gas.max(),
                     f[wall].sum() / f.sum(), np.sqrt(np.mean((f - gas)[free & ~room_b] ** 2)) / gas.max())
@@ -165,22 +150,16 @@ def main():
     fig.legend(handles=[
         Line2D([], [], color=C_BEAM, lw=1.0, label="beams"),
         Line2D([], [], color="k", marker="s", ls="", ms=2.0, label="emitter"),
-        Line2D([], [], color=C_MODEL, marker=".", ls="", ms=4, label="primitive centers"),
+        Line2D([], [], color=PRIMITIVE_GREY, marker=".", ls="", ms=4, label="primitive centers"),
     ], loc="outside lower center", ncol=3, frameon=False, handlelength=1.3, handletextpad=0.5,
         columnspacing=1.2, fontsize=8)
 
-    os.makedirs("plots", exist_ok=True)
-    fig.savefig("plots/obstacle_penalty_toy.pdf", bbox_inches="tight")
-    fig.savefig("plots/obstacle_penalty_toy.png", dpi=300, bbox_inches="tight")
-    if args.copy_to:
-        os.makedirs(os.path.expanduser(args.copy_to), exist_ok=True)
-        shutil.copy("plots/obstacle_penalty_toy.pdf", os.path.expanduser(args.copy_to))
+    save_figure(fig, "obstacle_penalty_toy", dpi={"png": 300}, copy_to=args.copy_to)
 
     print(f"beams: {len(beams)} from {len(POSES)} poses, none in the second room")
     for l, (k, share, peak, in_wall, err) in stats.items():
         print(f"lambda {l:g}: {k} primitives; unobserved room {100 * share:.1f}% of the gas (max {peak:.2f} x peak), "
               f"wall {100 * in_wall:.1f}%; NRMSE in the first room {100 * err:.2f}%")
-    print("Saved plots/obstacle_penalty_toy.{pdf,png}")
 
 
 if __name__ == "__main__":
