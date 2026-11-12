@@ -327,27 +327,22 @@ def cached_vantage_poses(cache_dir: str, obstacles: np.ndarray, cell_size: float
     return poses
 
 
-def generate_vantage_beams(obstacles: np.ndarray, cell_size: float, angular_step: float,
-                           num_poses: int | None = None, poses: np.ndarray | None = None,
-                           min_clearance: float = 0.3, max_range: float = 30.0,
-                           min_angle: float = 30.0, coverage: float = 0.8,
-                           min_length: float = 0.2, fov: float = 360.0,
+def generate_vantage_beams(obstacles: np.ndarray, cell_size: float, angular_step: float, poses: np.ndarray,
+                           max_range: float = 30.0, min_length: float = 0.2, fov: float = 360.0,
                            rng: np.random.Generator | None = None):
     """Beams shot by a robot that stops at several poses and pans its TDLAS.
 
-    Poses come from select_vantage_poses unless given. At each pose the sensor
-    sweeps `fov` degrees with one beam every `angular_step` degrees, as a
-    pan unit does, starting from a random heading; each beam ends at the first
-    obstacle (the reflector) or at max_range. Beams shorter than min_length
-    are dropped, so a pose next to a wall may keep fewer beams.
+    The poses, (P, 2) in meters, come from select_vantage_poses or
+    random_vantage_poses. At each pose the sensor sweeps `fov` degrees with
+    one beam every `angular_step` degrees, as a pan unit does, starting from
+    a random heading; each beam ends at the first obstacle (the reflector) or
+    at max_range. Beams shorter than min_length are dropped, so a pose next
+    to a wall may keep fewer beams.
 
     Returns (beams, pose_ids, poses): beams as [((x0, y0), (x1, y1)), ...] in
     meters, pose_ids (N,) int array, poses (P, 2) array.
     """
     rng = rng or np.random.default_rng()
-    if poses is None:
-        poses = select_vantage_poses(obstacles, cell_size, num_poses, min_clearance,
-                                     max_range, min_angle, coverage)
 
     # Beams leaving through an opening in the map border end on it; clamping
     # keeps rounding errors from placing that endpoint just outside the map
@@ -509,12 +504,8 @@ def generate_scenario_data(cfg: Config, beam_rng: np.random.Generator) -> tuple[
         poses = random_vantage_poses(obstacles, cfg.env.cell_size, len(poses), cfg.sim.min_clearance,
                                      cfg.sim.min_pose_spacing, rng=beam_rng)
     beams_list, pose_ids, poses = generate_vantage_beams(
-        obstacles, cfg.env.cell_size, cfg.sim.angular_step, poses=poses,
-        num_poses=cfg.sim.num_poses,
-        min_clearance=cfg.sim.min_clearance,
+        obstacles, cfg.env.cell_size, cfg.sim.angular_step, poses,
         max_range=cfg.sim.max_range,
-        min_angle=cfg.sim.min_crossing_angle,
-        coverage=cfg.sim.coverage,
         fov=cfg.sim.beam_fov,
         rng=beam_rng,
     )
