@@ -39,7 +39,7 @@ import numpy as np
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from utils.gaden_utils import DEFAULT_ROOT, FREE, OBSTACLE, OUTLET, save_preview
+from utils.gaden_utils import DEFAULT_ROOT, FREE, OBSTACLE, OUTLET, free_bounds, save_scenario, slice_meta
 
 GADEN_CORE = os.path.expanduser("~/gaden_core")
 
@@ -114,9 +114,7 @@ def simulate(scenario_dir: str, config: str, simulation: str, times_s: list[floa
         z = env_min[2] + (k + 0.5) * cs
 
         layer = cells[:, :, k]
-        free_xy = np.argwhere(layer == FREE)
-        lo = np.maximum(free_xy.min(axis=0) - crop_margin, 0)
-        hi = np.minimum(free_xy.max(axis=0) + crop_margin + 1, layer.shape)
+        lo, hi = free_bounds(layer, crop_margin)
         layer = layer[lo[0]:hi[0], lo[1]:hi[1]]
         W, H = layer.shape
 
@@ -157,14 +155,7 @@ def simulate(scenario_dir: str, config: str, simulation: str, times_s: list[floa
                 "num_filaments": int(sim.GetFilaments().size()),
                 "cell_size": cs,
                 "fine_factor": fine_factor,
-                "map_size_m": [W * cs, H * cs],
-                "grid_shape_hw": [H, W],
-                "origin_world": origin_world.tolist(),
-                "layer_index": k,
-                "layer_center_z": z,
-                "height_above_floor": z - floor,
-                "source_world": source,
-                "source_local": [source[0] - origin_world[0], source[1] - origin_world[1]],
+                **slice_meta(occupancy, cs, origin_world.tolist(), k, z, floor, source),
                 "sim_yaml": sim_yaml,
                 "config_yaml": config_yaml,
                 "units": "ppm (maps), ppm*m (beam integrals)",
@@ -172,12 +163,7 @@ def simulate(scenario_dir: str, config: str, simulation: str, times_s: list[floa
             }
 
             out_dir = os.path.join(root, name)
-            os.makedirs(out_dir, exist_ok=True)
-            np.savez_compressed(os.path.join(out_dir, "scenario.npz"), gas_map=gas_map, gas_map_fine=gas_map_fine,
-                                occupancy=occupancy)
-            with open(os.path.join(out_dir, "meta.json"), "w") as f:
-                json.dump(meta, f, indent=2)
-            save_preview(os.path.join(out_dir, "preview.png"), gas_map, occupancy, meta)
+            save_scenario(out_dir, {"gas_map": gas_map, "gas_map_fine": gas_map_fine, "occupancy": occupancy}, meta)
             packages.append((out_dir, meta))
     return packages
 

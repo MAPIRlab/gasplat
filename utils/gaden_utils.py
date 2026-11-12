@@ -338,6 +338,41 @@ def scenario_name(house: str, simulation: str, height_above_floor: float, iterat
     return f"{house.lower()}_{simulation}_h{height_above_floor:.2f}_it{iteration}"
 
 
+def free_bounds(layer: np.ndarray, margin: int) -> tuple[np.ndarray, np.ndarray]:
+    """Crop of an occupancy layer ((x, y) indexing) to its free cells and `margin` cells
+    around them, within the layer: layer[lo[0]:hi[0], lo[1]:hi[1]]. Returns (lo, hi)."""
+    free_xy = np.argwhere(layer == FREE)
+    lo = np.maximum(free_xy.min(axis=0) - margin, 0)
+    hi = np.minimum(free_xy.max(axis=0) + margin + 1, layer.shape)
+    return lo, hi
+
+
+def slice_meta(occupancy: np.ndarray, cell_size: float, origin_world, k: int, layer_center_z: float,
+               floor: float, source) -> dict:
+    """Metadata of a package's map and slice: its size, the world origin of the local frame,
+    the layer and its height, and the source in world and local coordinates."""
+    return {
+        "map_size_m": [occupancy.shape[1] * cell_size, occupancy.shape[0] * cell_size],   # (width, height)
+        "grid_shape_hw": list(occupancy.shape),
+        "origin_world": list(origin_world),
+        "layer_index": k,
+        "layer_center_z": layer_center_z,
+        "height_above_floor": layer_center_z - floor,
+        "source_world": list(source),
+        "source_local": [source[0] - origin_world[0], source[1] - origin_world[1]],
+    }
+
+
+def save_scenario(out_dir: str, arrays: dict, meta: dict):
+    """Writes a scenario package: the arrays (gas_map, occupancy, gas_map_fine) to
+    scenario.npz, the metadata to meta.json and a preview.png."""
+    os.makedirs(out_dir, exist_ok=True)
+    np.savez_compressed(os.path.join(out_dir, "scenario.npz"), **arrays)
+    with open(os.path.join(out_dir, "meta.json"), "w") as f:
+        json.dump(meta, f, indent=2)
+    save_preview(os.path.join(out_dir, "preview.png"), arrays["gas_map"], arrays["occupancy"], meta)
+
+
 def extract_scenario(house_zip: str, simulation: str, root: str = DEFAULT_ROOT,
                      height: float = 0.85, iteration: int | None = None,
                      crop_margin: int = 1, cutoff_sigmas: float = 5.0,
@@ -361,11 +396,9 @@ def extract_scenario(house_zip: str, simulation: str, root: str = DEFAULT_ROOT,
 
     # --- 2D occupancy of the beam layer, cropped to the free space ---
     layer = grid.cells[:, :, k]
-    free_xy = np.argwhere(layer == FREE)
-    if len(free_xy) == 0:
+    if not (layer == FREE).any():
         raise ValueError(f"Layer {k} ({height} m above the floor) has no free cells.")
-    lo = np.maximum(free_xy.min(axis=0) - crop_margin, 0)
-    hi = np.minimum(free_xy.max(axis=0) + crop_margin + 1, layer.shape)
+    lo, hi = free_bounds(layer, crop_margin)
     crop = (slice(lo[0], hi[0]), slice(lo[1], hi[1]))
     occupancy = _to_map(layer[crop])
 
@@ -390,14 +423,7 @@ def extract_scenario(house_zip: str, simulation: str, root: str = DEFAULT_ROOT,
         "iteration": iteration,
         "num_filaments": len(it.filaments),
         "cell_size": cs,
-        "map_size_m": [occupancy.shape[1] * cs, occupancy.shape[0] * cs],   # (width, height)
-        "grid_shape_hw": list(occupancy.shape),
-        "origin_world": list(origin_world),
-        "layer_index": k,
-        "layer_center_z": grid.env_min[2] + (k + 0.5) * cs,
-        "height_above_floor": grid.env_min[2] + (k + 0.5) * cs - grid.floor_height(),
-        "source_world": list(source),
-        "source_local": [source[0] - origin_world[0], source[1] - origin_world[1]],
+        **slice_meta(occupancy, cs, origin_world, k, grid.env_min[2] + (k + 0.5) * cs, grid.floor_height(), source),
         "units": "ppm (maps), ppm*m (beam integrals)",
         "cutoff_sigmas": cutoff_sigmas,
         "fine_factor": fine_factor,
@@ -406,11 +432,7 @@ def extract_scenario(house_zip: str, simulation: str, root: str = DEFAULT_ROOT,
 
     meta["name"] = scenario_name(house.name, simulation, meta["height_above_floor"], iteration)
     out_dir = os.path.join(root, meta["name"])
-    os.makedirs(out_dir, exist_ok=True)
-    np.savez_compressed(os.path.join(out_dir, "scenario.npz"), **arrays)
-    with open(os.path.join(out_dir, "meta.json"), "w") as f:
-        json.dump(meta, f, indent=2)
-    save_preview(os.path.join(out_dir, "preview.png"), gas_map, occupancy, meta)
+    save_scenario(out_dir, arrays, meta)
     return out_dir, meta
 
 
