@@ -231,8 +231,9 @@ The baselines are SART, RBF-SART and regularized least squares with first- and t
 | `scripts/figures/injection_figure.py` | the Gaussian injection, step by step |
 | `scripts/figures/obstacle_figure.py` | the obstacle penalty in a two-room environment |
 | `scripts/figures/distance_fields_figure.py` | the distance fields behind the obstacle penalty |
+| `scripts/figures/pipeline_figure.py` | the panels of the training-pipeline figure, from a real run on a plume through a door |
 
-Every figure script takes `--copy_to <folder>` to copy the PDF elsewhere.
+Every figure script takes `--copy_to <folder>` to copy the PDF elsewhere (the pipeline panels: all their files).
 </details>
 
 <details>
