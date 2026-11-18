@@ -30,7 +30,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
-from matplotlib.patches import Patch
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.append(ROOT)
@@ -54,8 +53,7 @@ MIN_AREA = 0.01         # as scripts/experiments/random_poses.py
 CROP_LEVEL, CROP_PAD = 0.02, 0.5
 # Regions of the free space: covered, single direction, unobserved without gas (false gas), with gas (missing)
 REGION_NAMES = ["covered", "single", "false", "missing"]
-REGION_LABEL = {"covered": "2+ directions", "single": "Single direction",
-                "false": "Unobserved, no gas", "missing": "Unobserved, gas"}
+REGION_LABEL = {"covered": "2+ directions", "single": "Single direction", "false": "False gas", "missing": "Missing gas"}
 REGION_COLOR = {"covered": "#9ccf8f", "single": "#f2d16b", "false": "#c9c9e8", "missing": "#d6604d"}
 GRID = dict(color="0.88", lw=0.6, zorder=0)
 
@@ -197,8 +195,34 @@ def run_maps(log, case, run):
     return np.load(path)
 
 
+def region_table(ax, rows):
+    """NRMSE (%) of each method (rows: [(label, metrics)]) over all the free space and each region,
+    as a small table: one column per region, under a bar of its colour (as in the regions panel);
+    the lower error of each column in bold, "–" where the region is empty."""
+    ax.axis("off"); ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    cols = [("All", "nrmse", None)] + [(REGION_LABEL[k].replace(" ", "\n"), f"nrmse_{k}", REGION_COLOR[k])
+                                       for k in REGION_NAMES]
+    x0, dx = 0.19, 0.81 / len(cols)
+    y_head, y_bar, y_rows = 0.84, 0.6, (0.4, 0.13)
+    ax.text(0.0, y_head, "NRMSE (%)", ha="left", va="center", fontsize=7, style="italic")
+    for c, (name, key, color) in enumerate(cols):
+        xc = x0 + (c + 0.5) * dx
+        ax.text(xc, y_head, name, ha="center", va="center", fontsize=7, linespacing=0.9)
+        if color:
+            ax.plot([xc - 0.38 * dx, xc + 0.38 * dx], [y_bar, y_bar], color=color, lw=2.5, solid_capstyle="butt")
+        vals = [m.get(key, np.nan) for _, m in rows]
+        best = None if all(np.isnan(vals)) else f"{100 * np.nanmin(vals):.1f}"
+        for v, y in zip(vals, y_rows):
+            text = "–" if np.isnan(v) else f"{100 * v:.1f}"
+            ax.text(xc, y, text, ha="center", va="center", fontsize=7, fontweight="bold" if text == best else "normal")
+    for (label, _), y in zip(rows, y_rows):
+        ax.text(0.0, y, label, ha="left", va="center", fontsize=7)
+
+
 def examples_figure(log, by_house, houses, run, out, shown=("LFD", "Gas Splatting"), copy_to=None):
-    """run None: the median run of each house (median_run)."""
+    """run None: the median run of each house (median_run). Under the reconstructions, a table of
+    the NRMSE of each method over all the free space and each region (region_table); its colour
+    bars name the colours of the regions panel, so the figure needs no legend."""
     rows = []
     for h in houses:
         rr = run if run is not None else median_run(by_house[h])
@@ -215,9 +239,12 @@ def examples_figure(log, by_house, houses, run, out, shown=("LFD", "Gas Splattin
     ratios = [(x["box"][3] - x["box"][2]) / (x["box"][1] - x["box"][0]) for x in rows]
     ncol = 2 + len(shown)
     map_w = 7.16 / ncol
-    fig = plt.figure(figsize=(7.16, sum(map_w * q + 0.62 for q in ratios) + 0.3))
-    grid = fig.add_gridspec(len(rows), ncol, height_ratios=[q + 0.62 / map_w for q in ratios], wspace=0.05,
-                            hspace=0.08)
+    table_h = 0.55                                                    # inches
+    fig = plt.figure(figsize=(7.16, sum(map_w * q + 0.3 + table_h for q in ratios)))
+    heights = []
+    for q in ratios:
+        heights += [q + 0.3 / map_w, table_h / map_w]
+    grid = fig.add_gridspec(2 * len(rows), ncol, height_ratios=heights, wspace=0.05, hspace=0.08)
     region_cmap = ListedColormap([REGION_COLOR[k] for k in REGION_NAMES])
     letters = iter("abcdefghijkl")
     for i, x in enumerate(rows):
@@ -229,7 +256,7 @@ def examples_figure(log, by_house, houses, run, out, shown=("LFD", "Gas Splattin
         P = x["d"]["poses"]
         inside = (P[:, 0] >= extent[0]) & (P[:, 0] <= extent[1]) & (P[:, 1] >= extent[2]) & (P[:, 1] <= extent[3])
         for j in range(ncol):
-            ax = fig.add_subplot(grid[i, j])
+            ax = fig.add_subplot(grid[2 * i, j])
             if j == 1:
                 img, kw = crop(x["regions"]).astype(float), dict(cmap=region_cmap, vmin=-0.5, vmax=3.5,
                                                                  interpolation="nearest")
@@ -241,15 +268,10 @@ def examples_figure(log, by_house, houses, run, out, shown=("LFD", "Gas Splattin
             if j < 2:
                 ax.scatter(P[inside, 0], P[inside, 1], marker="^", s=20, c="w", edgecolors="k", linewidths=0.6,
                            zorder=3)
-            if j >= 2:
-                m = gas_map_metrics(x["gt"], x["d"][f"pred/{shown[j - 2]}"], x["d"]["obstacles"], 0.1, x["d"]["levels"])
-                fmt = lambda k: "–" if np.isnan(m.get(k, np.nan)) else f"{100 * m[k]:.1f}"   # – where the region is empty
-                ax.text(0.5, -0.03, f"all {100 * m['nrmse']:.1f}, 2+ dir. {fmt('nrmse_covered')}, single {fmt('nrmse_single')}\n"
-                        f"false {fmt('nrmse_false')}, missing {fmt('nrmse_missing')} (NRMSE %)",
-                        transform=ax.transAxes, ha="center", va="top", fontsize=7)
             ax.set_xlim(extent[0], extent[1]); ax.set_ylim(extent[2], extent[3])
-    fig.legend(handles=[Patch(color=REGION_COLOR[k], label=REGION_LABEL[k]) for k in REGION_NAMES],
-               loc="lower center", ncol=4, frameon=False, bbox_to_anchor=(0.5, -0.02), fontsize=8)
+        table = [(LABEL.get(m, m), gas_map_metrics(x["gt"], x["d"][f"pred/{m}"], x["d"]["obstacles"], 0.1, x["d"]["levels"]))
+                 for m in shown]
+        region_table(fig.add_subplot(grid[2 * i + 1, 2:]), table)
     save_figure(fig, out, copy_to=copy_to)
 
 
