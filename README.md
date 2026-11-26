@@ -71,8 +71,8 @@ An open-path gas sensor such as a **TDLAS** (Tunable Diode Laser Absorption Spec
 
 **1. Clone the repository**
 ```bash
-git clone https://github.com/aleevr04/gas_splatting.git
-cd gas_splatting
+git clone https://github.com/MAPIRlab/gasplat.git
+cd gasplat
 ```
 
 **2. Create and activate a virtual environment** (any tool works; `venv` shown)
@@ -266,7 +266,7 @@ python scripts/tools/sweep.py --params gradient_threshold --values 0.01 0.02 0.0
 ## 🗂️ Repository structure
 
 ```text
-gas_splatting/
+gasplat/
 ├── main.py              # Single run: simulate → initialize → train → plot
 ├── config.py            # Configuration (simple_parsing): simulation, training, densification
 ├── gs_model.py          # Gaussian mixture, rendering and density control
