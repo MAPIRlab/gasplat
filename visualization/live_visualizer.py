@@ -23,7 +23,7 @@ THEME = {
     # Typography
     'font_family': 'Segoe UI',
     'title': '#1f2937',         # Color for the plot titles
-    'title_size': '18pt',         # Font size for plot titles
+    'title_size': '13pt',         # Font size for plot titles
     'text_light': '#8b92a0',    # Muted text color for the static labels inside the banner
     'axis_text': '#6b7280',     # Color for the numerical tick values on the graphs
     
@@ -46,11 +46,18 @@ THEME = {
     'ellipse_strong_level': 0.3,
     'ellipse_points': 40,
 
+    # --- Recording (the GIF saved at the end) ---
+    'update_every': 10,     # Iterations between refreshes of the window (the trainer reads it); also at densification
+    'record_every': 10,     # Iterations between recorded frames: fixed spacing, so the GIF plays at the training's pace
+    'gif_fps': 20,
+    'gif_hold_s': 2.0,      # Seconds the last frame is held before the GIF loops
+
     # --- Window Dimensions ---
     'window_width_ratio': 0.5,
     'min_window_width': 900,
-    'min_window_height': 600,
-    'margin': 20,           # Margins around the plots and inside the layout
+    'min_window_height': 400,
+    'loss_height': 230,     # Height of the loss plot row (px); the window height follows the maps' aspect ratio
+    'margin': 8,            # Margins around the plots and inside the layout
     'col_min_width': 200    # Minimum width for each of the plot columns
 }
 
@@ -78,6 +85,9 @@ class LiveVisualizer:
         self.map_size = cfg.env.map_size
         self.cell_size = cfg.env.cell_size
         self.quiet = cfg.quiet
+        self.update_every = THEME['update_every']
+        self.iteration_budget = cfg.train.iterations          # the loss plot's x range grows in steps of this
+        self.last_recorded = None
         ground_truth = environment.ground_truth.gas_map if environment and environment.ground_truth else None
         obstacles = environment.obstacles if environment else None
         # Beams, estimated map and, when there is one, the ground truth
@@ -100,9 +110,13 @@ class LiveVisualizer:
         self._setup_plots()
         if ground_truth is not None:
             self._show_ground_truth(ground_truth)
+            free = np.ones(ground_truth.shape, bool) if obstacles is None else ~(obstacles > 0.5)
+            self.gt_free, self.free = ground_truth[free], free
+            self.gt_peak = max(float(self.gt_free.max()), 1e-12)
         if obstacles is not None:
             self._show_obstacles(obstacles)
         self.num_beams_shown = 0
+        self.loss_range = None
 
     def _frame_writer(self):
         while True:
@@ -146,8 +160,8 @@ class LiveVisualizer:
             QLabel {{
                 background-color: {THEME['header_bg']};
                 font-family: '{THEME['font_family']}';
-                font-size: 14pt;
-                padding: 18px;
+                font-size: 12pt;
+                padding: 8px;
                 border-bottom: 2px solid {THEME['border']};
             }}
         """)
@@ -161,14 +175,13 @@ class LiveVisualizer:
         screen_rect = self.app.primaryScreen().availableGeometry()
 
         target_width = int(screen_rect.width() * THEME['window_width_ratio'])
-        single_map_width = target_width / self.num_cols
-
-        map_aspect_ratio = self.map_size[0] / self.map_size[1]
-        map_height = single_map_width / map_aspect_ratio
-
-        ideal_height = int(2 * map_height)
-
         final_width = max(target_width, THEME['min_window_width'])
+
+        # Height that fits the content: the maps at their column width, plus the header, the
+        # titles and the loss plot (extra height would only become empty bands around the maps)
+        map_aspect_ratio = self.map_size[0] / self.map_size[1]
+        self.map_row_height = int((final_width / self.num_cols - 2 * THEME['margin']) / map_aspect_ratio) + 45
+        ideal_height = 40 + self.map_row_height + THEME['loss_height']
         final_height = max(ideal_height, THEME['min_window_height'])
         max_height = int(screen_rect.height() * 0.9)
         final_height = min(final_height, max_height)
@@ -246,6 +259,11 @@ class LiveVisualizer:
             fillBrush=pg.mkBrush(THEME['accent_fill'])
         )
         self.p_loss.setContentsMargins(0, 0, THEME['margin'], 0)
+        # Fixed axes, widened in steps (_update_loss): autoscaling redraws the curve at a new scale every frame
+        self.p_loss.getViewBox().disableAutoRange()
+        self.p_loss.setMouseEnabled(x=False, y=False)
+        self.p_loss.setMenuEnabled(False)
+        self.p_loss.hideButtons()
 
         for p in map_plots:
             # Force the exact physical dimensions
@@ -269,6 +287,9 @@ class LiveVisualizer:
         main_layout = self.canvas.ci.layout
 
         if main_layout is not None:
+            # Rows in proportion to their content (maps at their column width, then the loss plot)
+            main_layout.setRowStretchFactor(0, self.map_row_height)
+            main_layout.setRowStretchFactor(1, THEME['loss_height'])
             total_w = max(0, int(self.canvas.size().width()))
             col_w = max(THEME['col_min_width'], int(total_w / self.num_cols) - 2 * THEME['margin'])
             for col in range(self.num_cols):
@@ -314,16 +335,7 @@ class LiveVisualizer:
     def update(self, iteration: int, loss_history: List[float], model: GasSplattingModel, beams=None):
         """Extracts the latest parameters from the model, updates the UI components, and saves the frame state.
         beams: the (N, 2, 2) beams trained on, redrawn when their number changes (a new batch)."""
-        # Update Loss
-        valid_losses = [l for l in loss_history if not np.isnan(l) and not np.isinf(l)]
-        x_data = np.arange(len(valid_losses))
-        if valid_losses:
-            min_loss = min(valid_losses)
-            min_loss_log = np.log10(min_loss)
-            safe_bottom = min_loss_log - 0.1 
-            
-            self.loss_curve.setFillLevel(safe_bottom)
-            self.loss_curve.setData(x_data, valid_losses)
+        self._update_loss(loss_history)
 
         if beams is not None and len(beams) != self.num_beams_shown:
             self._show_beams(beams.detach().cpu().numpy())
@@ -340,21 +352,23 @@ class LiveVisualizer:
         self.ellipses_strong.setData(*self._ellipse_lines(pos[strong], cov[strong]))
         self.ellipses_faint.setData(*self._ellipse_lines(pos[faint], cov[faint]))
 
+        # Rendered map, and its NRMSE when there is a ground truth (RMSE over the free cells / true peak)
+        rendered = model.render_map(cell_size=self.cell_size)
+        fields = [("Iteration", f"{iteration}"), ("Gaussians", f"{len(pos)}")]
+        if self.has_ground_truth:
+            nrmse = np.sqrt(np.mean((rendered[self.free] - self.gt_free) ** 2)) / self.gt_peak
+            fields.append(("NRMSE", f"{100 * nrmse:.1f}%"))
+
         # Update Header Banner
         accent = THEME['accent']
         text_color = THEME['text_light']
         spacer = '&nbsp;' * 10
-        
-        formatted_text = (
-            f'<span style="color: {text_color};">Iteration:</span> '
-            f'<b style="color: {accent};">{iteration}</b>{spacer}'
-            f'<span style="color: {text_color};">Gaussians:</span> '
-            f'<b style="color: {accent};">{len(pos)}</b>'
-        )
-        self.header_banner.setText(formatted_text)
+        self.header_banner.setText(spacer.join(
+            f'<span style="color: {text_color};">{name}:</span> <b style="color: {accent};">{value}</b>'
+            for name, value in fields))
 
         # Update Rendered Map
-        map_data = model.render_map(cell_size=self.cell_size).T
+        map_data = rendered.T
         if hasattr(self, 'gt_levels'):
             self.img_map_item.setImage(map_data, levels=self.gt_levels)
         else:
@@ -363,13 +377,35 @@ class LiveVisualizer:
 
         self.app.processEvents()
 
-        # Frame Capture for GIF Generation
+        # Frame Capture for GIF Generation, every record_every iterations (refreshes at densification in
+        # between are not recorded, so that the frames stay evenly spaced)
+        if self.last_recorded is not None and iteration - self.last_recorded < THEME['record_every']:
+            return
+        self.last_recorded = iteration
         qimage = self.main_win.grab().toImage()
         frame_path = os.path.join(self.temp_dir, f"frame_{self.frame_count:05d}.png")
         
         # Send the frame to the writer thread via the queue
         self.frame_queue.put((frame_path, qimage))
         self.frame_count += 1
+
+    def _update_loss(self, loss_history: List[float]):
+        """Loss curve on fixed axes: the x range grows in steps of the iteration budget and the
+        (log) y range only widens, by whole decades, so the curve is not redrawn at a new scale
+        every frame."""
+        valid = [l for l in loss_history if np.isfinite(l) and l > 0]
+        if not valid:
+            return
+        lo, hi = np.floor(np.log10(min(valid))), np.ceil(np.log10(max(valid)))
+        x_max = self.iteration_budget * max(1, int(np.ceil(len(loss_history) / self.iteration_budget)))
+        if self.loss_range is None or lo < self.loss_range[0] or hi > self.loss_range[1] or x_max > self.loss_range[2]:
+            lo = lo if self.loss_range is None else min(lo, self.loss_range[0])
+            hi = hi if self.loss_range is None else max(hi, self.loss_range[1])
+            self.loss_range = (lo, hi, x_max)
+            self.p_loss.setXRange(0, x_max, padding=0.01)
+            self.p_loss.setYRange(lo, hi, padding=0.02)
+        self.loss_curve.setFillLevel(self.loss_range[0])
+        self.loss_curve.setData(np.arange(len(valid)), valid)
 
     def save_gif(self, filepath):
         """Waits for all frames to be written, then generates a GIF from the captured frames using ffmpeg."""
@@ -386,15 +422,22 @@ class LiveVisualizer:
         if not self.quiet: print(f"Generating GIF from {self.frame_count} frames...")
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
-        # Create GIF from saved frames using ffmpeg
+        # Hold the last frame before the GIF loops
+        last = os.path.join(self.temp_dir, f"frame_{self.frame_count - 1:05d}.png")
+        for k in range(self.frame_count, self.frame_count + int(THEME['gif_hold_s'] * THEME['gif_fps'])):
+            shutil.copy(last, os.path.join(self.temp_dir, f"frame_{k:05d}.png"))
+
+        # Create GIF from saved frames using ffmpeg. Ordered (Bayer) dithering over a full palette: the
+        # same colour gets the same pattern in every frame, so still parts stay still
         input_pattern = f"{self.temp_dir}/frame_%05d.png"
         ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
         subprocess.run([
-            ffmpeg_exe, '-y', '-framerate', '10', 
+            ffmpeg_exe, '-y', '-framerate', str(THEME['gif_fps']),
             '-loglevel', 'error',
             '-i', input_pattern,
-            '-filter_complex', 'split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse',
+            '-filter_complex', 'split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=full[p];'
+                               '[s1][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle',
             '-loop', '0', 
             filepath
         ], check=True)

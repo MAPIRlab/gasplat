@@ -301,7 +301,7 @@ class Trainer:
                 pbar.set_postfix({'loss': f'{current_loss:.5f}', 'gaussians': self.model.num_gaussians})
             
             # --- Real time visualization ---
-            if self.visualizer and (iteration % 20 == 0 or is_densifying):
+            if self.visualizer and (iteration % self.visualizer.update_every == 0 or is_densifying):
                 self.visualizer.update(
                     iteration=self.global_iteration,
                     loss_history=self.results.loss_history,
